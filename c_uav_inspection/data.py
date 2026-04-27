@@ -120,10 +120,29 @@ def _read_uav_params(ws: Any) -> UAVParams:
     )
 
 
+_EXPECTED_TARGET_COUNT = 16
+
+
 def _read_targets(ws: Any) -> list[Target]:
-    """Read Target list from NodeData worksheet rows 5-20 (node_id 1..16)."""
+    """Read Target list from NodeData worksheet rows 5-20 (node_id 1..16).
+
+    Skips empty rows (where node_id is None), consistent with _read_uav_params.
+    Validates that exactly _EXPECTED_TARGET_COUNT targets are read.
+    Column index 11 (row[11] = extra_confirm_time_s) is intentionally skipped:
+    it is a derived column present in the Excel that duplicates information
+    from direct_confirm_time_s and is not needed for modeling.
+    """
     targets: list[Target] = []
-    for row in ws.iter_rows(min_row=5, max_row=20, values_only=True):
+    # Read from row 5 until the data runs out.
+    # Use an upper bound well beyond the expected 16 rows to detect
+    # extra targets that would violate the count validation.
+    for row in ws.iter_rows(min_row=5, max_row=max(ws.max_row, 5), values_only=True):
+        # Stop scanning once we encounter a fully empty row beyond the data
+        # (all columns are None), to avoid reading trailing blank rows.
+        if all(cell is None for cell in row):
+            break
+        if row[0] is None:
+            continue
         targets.append(Target(
             node_id=int(row[0]),
             node_name=str(row[1]),
@@ -136,11 +155,17 @@ def _read_targets(ws: Any) -> list[Target]:
             issue_type=str(row[8]),
             base_hover_time_s=float(row[9]),
             direct_confirm_time_s=float(row[10]),
+            # row[11] intentionally skipped: extra_confirm_time_s (derived column)
             manual_point_id=str(row[12]),
             manual_x_m=float(row[13]),
             manual_y_m=float(row[14]),
             manual_service_time_s=float(row[15]),
         ))
+    if len(targets) != _EXPECTED_TARGET_COUNT:
+        raise ValueError(
+            f"NodeData validation failed: expected {_EXPECTED_TARGET_COUNT} "
+            f"targets, got {len(targets)}"
+        )
     return targets
 
 
@@ -169,7 +194,15 @@ def _read_matrix_sheet(
             col_ids.append(str(col_val))
 
     matrix: dict[tuple[int, int] | tuple[str, str], float] = {}
-    for row in ws.iter_rows(min_row=4, max_row=20, values_only=True):
+    # Use flexible max_row to detect extra data beyond the expected range,
+    # consistent with _read_targets.
+    for row in ws.iter_rows(min_row=4, max_row=max(ws.max_row, 4), values_only=True):
+        # Stop on a fully empty row (all columns are None) — signals end of
+        # data. Consistent with _read_targets.
+        if all(cell is None for cell in row):
+            break
+        if row[0] is None:
+            continue
         if key_type == "int":
             from_id: int | str = int(row[0])
         else:
