@@ -61,12 +61,47 @@ class ProblemData:
     ground_time_s: dict[tuple[str, str], float]
 
 
+_EXPECTED_PARAM_KEYS = frozenset({
+    "K_max",
+    "battery_capacity_J",
+    "safety_reserve_J",
+    "effective_energy_limit_J",
+    "horizontal_speed_mps",
+    "vertical_speed_mps",
+    "horizontal_energy_J_per_m",
+    "up_energy_J_per_m",
+    "down_energy_J_per_m",
+    "hover_power_J_per_s",
+    "battery_swap_time_s",
+    "operating_horizon_s",
+    "walking_speed_mps",
+    "walking_detour_factor",
+})
+
+
 def _read_uav_params(ws: Any) -> UAVParams:
     """Read UAVParams from UAV_Params worksheet rows 4-17."""
     raw: dict[str, float] = {}
     for row in ws.iter_rows(min_row=4, max_row=17, values_only=True):
+        if row[0] is None:
+            continue
         param_name = str(row[0]).strip()
         raw[param_name] = float(row[1])
+
+    raw_keys = frozenset(raw.keys())
+    if raw_keys != _EXPECTED_PARAM_KEYS:
+        unexpected = sorted(raw_keys - _EXPECTED_PARAM_KEYS)
+        missing = sorted(_EXPECTED_PARAM_KEYS - raw_keys)
+        parts = []
+        if unexpected:
+            parts.append(f"unexpected parameter(s): {unexpected}")
+        if missing:
+            parts.append(f"missing parameter(s): {missing}")
+        raise ValueError(
+            f"UAV_Params validation failed: {'; '.join(parts)}. "
+            f"Expected {sorted(_EXPECTED_PARAM_KEYS)}."
+        )
+
     return UAVParams(
         k_max=int(raw["K_max"]),
         battery_capacity_j=raw["battery_capacity_J"],
