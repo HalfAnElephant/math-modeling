@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -133,7 +133,7 @@ def _read_matrix_sheet(
         else:
             col_ids.append(str(col_val))
 
-    matrix: dict[tuple[int | str, int | str], float] = {}
+    matrix: dict[tuple[int, int] | tuple[str, str], float] = {}
     for row in ws.iter_rows(min_row=4, max_row=20, values_only=True):
         if key_type == "int":
             from_id: int | str = int(row[0])
@@ -194,7 +194,7 @@ def validate_problem_data(data: ProblemData) -> dict[str, Any]:
     max_energy: float = 0.0
     for t in targets:
         nid = t.node_id
-        roundtrip_flight = flight_energy.get((0, nid), 0.0) + flight_energy.get((nid, 0), 0.0)
+        roundtrip_flight = flight_energy[(0, nid)] + flight_energy[(nid, 0)]
         confirm_energy = roundtrip_flight + t.direct_confirm_time_s * params.hover_power_j_per_s
         if confirm_energy > max_energy:
             max_energy = confirm_energy
