@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Editor and IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MATLAB
+*.asv
+*.m~
+slprj/
+sccprj/
+*.mex*
+*.mlappinstall
+
+# Office temporary files
+~$*
+.~*
+*.tmp
+*.bak
+
+# Logs
+*.log
+
+# Local reference materials
+参考资料/
