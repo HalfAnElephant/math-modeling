@@ -4,7 +4,7 @@
 
 **Goal:** Build a reproducible research workflow for Problem C, producing feasible multi-UAV patrol schedules, UAV-property joint inspection decisions, sensitivity experiments, figures, and paper-ready result tables without introducing ML/DL.
 
-**Architecture:** Use a Python package centered on deterministic data loading, route evaluation, constrained constructive heuristics, local search, ground TSP optimization, experiment runners, and report exports. The mathematical model remains the primary contribution; algorithms only search for high-quality feasible solutions under the stated constraints.
+**Architecture:** Use a Python package centered on deterministic data loading, route evaluation, normalized objective scoring, continuous hover-time allocation, constrained constructive heuristics, ruin-and-recreate local search, ground TSP optimization, experiment runners, and report exports. The mathematical model remains the primary contribution; algorithms only search for high-quality feasible solutions under the stated constraints.
 
 **Tech Stack:** Python 3, `openpyxl`, `numpy`, standard-library `dataclasses`, `itertools`, `json`, `csv`, `unittest` or `pytest`; optional `matplotlib` for figures. Input data stays in `2026同济数学建模竞赛赛题/2026C数据.xlsx`.
 
@@ -15,15 +15,20 @@
 - Create `c_uav_inspection/__init__.py`: package marker and version string.
 - Create `c_uav_inspection/data.py`: workbook parser, typed records, matrix extraction, deterministic validation checks.
 - Create `c_uav_inspection/model.py`: route/task/solution dataclasses and exact objective metric calculations.
+- Create `c_uav_inspection/objective.py`: min-max normalization helpers for dimensionless multi-objective scores.
 - Create `c_uav_inspection/problem1.py`: baseline multi-UAV basic patrol solver and `K`/battery-swap comparison helpers.
-- Create `c_uav_inspection/problem2.py`: direct-confirm decision logic, property-review TSP, and closed-loop solver.
-- Create `c_uav_inspection/search.py`: route construction and local-search operators shared by both problems.
+- Create `c_uav_inspection/problem2.py`: direct-confirm decision logic, property-review TSP, threshold flooring, and closed-loop solver.
+- Create `c_uav_inspection/search.py`: route construction, continuous hover splitting, and local-search operators shared by both problems.
 - Create `c_uav_inspection/experiments.py`: command-line experiment runner that writes CSV/JSON summaries.
 - Create `c_uav_inspection/plots.py`: figure generator for route maps, Gantt charts, and sensitivity curves.
 - Create `tests/test_data.py`: workbook parsing and consistency tests.
 - Create `tests/test_model.py`: route energy/time/objective unit tests.
+- Create `tests/test_objective.py`: normalized multi-objective scoring tests.
+- Create `tests/test_search.py`: nearest-neighbor ordering and continuous hover-splitting tests.
 - Create `tests/test_problem1.py`: feasibility and comparison tests for the basic UAV patrol model.
 - Create `tests/test_problem2.py`: closed-loop feasibility and direct-confirm tradeoff tests.
+- Create `tests/test_experiments.py`: CSV/JSON experiment output tests.
+- Create `tests/test_plots.py`: figure generation smoke tests.
 - Create `outputs/c_uav_inspection/`: generated results, CSV files, JSON schedules, and figures.
 - Create `report/c_uav_inspection_results.md`: paper-ready result narrative, model equations, and table references.
 
@@ -33,16 +38,19 @@
 - Treat all UAVs as homogeneous and available from time 0.
 - Ignore takeoff queues, landing queues, airspace collision avoidance, and weather disturbances, matching the problem statement.
 - Allow a target point to be visited multiple times; its hover time is cumulative.
+- Treat hover time as a divisible continuous resource. A target is never treated as an atomic indivisible visit; if a sortie lacks enough remaining energy, it serves the feasible partial hover time and leaves the residual demand for later sorties or other UAVs.
 - Require every target point to satisfy `total_hover_s >= base_hover_time_s`.
-- In Problem 2, set `direct_confirmed=True` only when `total_hover_s >= direct_confirm_time_s`.
+- In Problem 2, set `direct_confirmed=True` only when `total_hover_s >= max(base_hover_time_s, direct_confirm_time_s * multiplier)`.
 - Property staff start after the UAV phase finishes; property time contributes to closed-loop time but is not constrained by `operating_horizon_s`.
-- Use objective weights:
+- Never add raw time, energy, weighted completion, and balance terms directly. Every weighted objective score must first map each term into `[0, 1]` using explicit min-max bounds from the compared candidate set or documented theoretical bounds.
+- Use normalized objective weights:
   - Problem 1: `time=0.55`, `priority_completion=0.20`, `energy=0.15`, `balance=0.10`.
   - Problem 2: `closed_loop_time=0.50`, `weighted_manual=0.20`, `manual_count=0.10`, `energy=0.10`, `balance=0.10`.
 - Use sensitivity values:
   - UAV count `K = 1,2,3,4`.
   - Battery swap time `tau_b = 0,150,300,450,600`.
-  - Direct-confirm threshold multiplier `m = 0.70,0.85,1.00,1.15,1.30`.
+  - Direct-confirm threshold multiplier `m = 0.70,0.85,1.00,1.15,1.30`, with each target threshold floored by `base_hover_time_s`.
+- Use the constructive heuristic as the main solver. Use MILP or exhaustive enumeration only as an optional small-scale verifier for fixed route columns, fixed direct-confirm sets, or paper comparison tables; do not make Gurobi a required dependency.
 
 ---
 
@@ -579,6 +587,128 @@ git commit -m "feat: calculate uav route metrics"
 
 ---
 
+### Task 4A: Add Normalized Objective Scoring
+
+**Files:**
+- Create: `c_uav_inspection/objective.py`
+- Test: `tests/test_objective.py`
+
+- [ ] **Step 1: Write normalization tests**
+
+Create `tests/test_objective.py`:
+
+```python
+from c_uav_inspection.objective import ObjectiveTermBounds, bounds_from_candidates, normalize_term, weighted_normalized_objective
+
+
+def test_normalize_term_maps_value_to_unit_interval():
+    bounds = ObjectiveTermBounds(lower=100.0, upper=300.0)
+
+    assert normalize_term(100.0, bounds) == 0.0
+    assert normalize_term(200.0, bounds) == 0.5
+    assert normalize_term(300.0, bounds) == 1.0
+
+
+def test_normalize_term_handles_degenerate_bounds():
+    bounds = ObjectiveTermBounds(lower=42.0, upper=42.0)
+
+    assert normalize_term(42.0, bounds) == 0.0
+
+
+def test_weighted_objective_does_not_let_large_units_dominate():
+    rows = [
+        {"time_s": 1000.0, "energy_j": 900000.0},
+        {"time_s": 2000.0, "energy_j": 100000.0},
+    ]
+    bounds = bounds_from_candidates(rows, ("time_s", "energy_j"))
+
+    score = weighted_normalized_objective(
+        values={"time_s": 1000.0, "energy_j": 900000.0},
+        bounds=bounds,
+        weights={"time_s": 0.5, "energy_j": 0.5},
+    )
+
+    assert score == 0.5
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run:
+
+```bash
+python3 -m pytest tests/test_objective.py -q
+```
+
+Expected: import failure for `c_uav_inspection.objective`.
+
+- [ ] **Step 3: Implement objective normalization**
+
+Create `c_uav_inspection/objective.py`:
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Mapping, Sequence
+
+
+@dataclass(frozen=True)
+class ObjectiveTermBounds:
+    lower: float
+    upper: float
+
+
+def normalize_term(value: float, bounds: ObjectiveTermBounds) -> float:
+    if bounds.upper <= bounds.lower:
+        return 0.0
+    normalized = (value - bounds.lower) / (bounds.upper - bounds.lower)
+    return min(1.0, max(0.0, normalized))
+
+
+def bounds_from_candidates(
+    rows: Sequence[Mapping[str, float | int]],
+    term_names: tuple[str, ...],
+) -> dict[str, ObjectiveTermBounds]:
+    bounds: dict[str, ObjectiveTermBounds] = {}
+    for term_name in term_names:
+        values = [float(row[term_name]) for row in rows]
+        bounds[term_name] = ObjectiveTermBounds(lower=min(values), upper=max(values))
+    return bounds
+
+
+def weighted_normalized_objective(
+    values: Mapping[str, float | int],
+    bounds: Mapping[str, ObjectiveTermBounds],
+    weights: Mapping[str, float],
+) -> float:
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        raise ValueError("objective weights must have positive sum")
+    return sum(
+        (weight / weight_sum) * normalize_term(float(values[term_name]), bounds[term_name])
+        for term_name, weight in weights.items()
+    )
+```
+
+- [ ] **Step 4: Run objective tests**
+
+Run:
+
+```bash
+python3 -m pytest tests/test_objective.py -q
+```
+
+Expected: `3 passed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add c_uav_inspection/objective.py tests/test_objective.py
+git commit -m "feat: normalize multi-objective scores"
+```
+
+---
+
 ### Task 5: Build Shared Route Construction Utilities
 
 **Files:**
@@ -592,7 +722,10 @@ Create `tests/test_search.py`:
 ```python
 from pathlib import Path
 
+import pytest
+
 from c_uav_inspection.data import load_problem_data
+from c_uav_inspection.model import evaluate_uav_route
 from c_uav_inspection.search import nearest_neighbor_order, split_order_into_energy_feasible_routes
 
 
@@ -613,10 +746,33 @@ def test_split_order_into_energy_feasible_routes_satisfies_base_hover():
     hover = {target.node_id: target.base_hover_time_s for target in data.targets}
 
     routes = split_order_into_energy_feasible_routes(order, hover, data)
+    served = {node_id: 0.0 for node_id in hover}
+    for route in routes:
+        for node_id, seconds in route.hover_times_s.items():
+            served[node_id] += seconds
 
     assert len(routes) >= 2
     assert all(route.node_sequence[0] == 0 and route.node_sequence[-1] == 0 for route in routes)
-    assert all(sum(route.hover_times_s.values()) > 0 for route in routes)
+    assert all(evaluate_uav_route(route, data).feasible_energy for route in routes)
+    assert served == pytest.approx(hover)
+
+
+def test_split_order_allows_one_target_hover_to_span_multiple_sorties():
+    data = load_problem_data(DATA_PATH)
+    target_id = 16
+    single_visit_hover_capacity = (
+        data.params.effective_energy_limit_j
+        - data.flight_energy_j[(0, target_id)]
+        - data.flight_energy_j[(target_id, 0)]
+    ) / data.params.hover_power_j_per_s
+    hover = {target_id: single_visit_hover_capacity + 30.0}
+
+    routes = split_order_into_energy_feasible_routes((target_id,), hover, data)
+    served = sum(route.hover_times_s.get(target_id, 0.0) for route in routes)
+
+    assert len(routes) >= 2
+    assert served == pytest.approx(hover[target_id])
+    assert all(evaluate_uav_route(route, data).feasible_energy for route in routes)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -639,6 +795,8 @@ from __future__ import annotations
 from c_uav_inspection.data import ProblemData
 from c_uav_inspection.model import UAVRoute, evaluate_uav_route
 
+EPSILON = 1e-7
+
 
 def nearest_neighbor_order(data: ProblemData, node_ids: list[int]) -> tuple[int, ...]:
     remaining = set(node_ids)
@@ -657,7 +815,7 @@ def _candidate_route(sortie_id: int, nodes: list[int], hover_times_s: dict[int, 
         uav_id=1,
         sortie_id=sortie_id,
         node_sequence=tuple([0, *nodes, 0]),
-        hover_times_s={node_id: hover_times_s[node_id] for node_id in nodes},
+        hover_times_s={node_id: hover_times_s.get(node_id, 0.0) for node_id in nodes if hover_times_s.get(node_id, 0.0) > EPSILON},
     )
 
 
@@ -668,18 +826,47 @@ def split_order_into_energy_feasible_routes(
 ) -> tuple[UAVRoute, ...]:
     routes: list[UAVRoute] = []
     current_nodes: list[int] = []
+    current_hover: dict[int, float] = {}
     sortie_id = 1
     for node_id in order:
-        candidate_nodes = [*current_nodes, node_id]
-        candidate = _candidate_route(sortie_id, candidate_nodes, hover_times_s)
-        if current_nodes and not evaluate_uav_route(candidate, data).feasible_energy:
-            routes.append(_candidate_route(sortie_id, current_nodes, hover_times_s))
-            sortie_id += 1
-            current_nodes = [node_id]
-        else:
-            current_nodes = candidate_nodes
-    if current_nodes:
-        routes.append(_candidate_route(sortie_id, current_nodes, hover_times_s))
+        remaining_hover = float(hover_times_s[node_id])
+        while remaining_hover > EPSILON:
+            if node_id not in current_nodes:
+                candidate_nodes = [*current_nodes, node_id]
+                candidate_hover = dict(current_hover)
+                candidate = _candidate_route(sortie_id, candidate_nodes, candidate_hover)
+                candidate_energy = evaluate_uav_route(candidate, data).energy_j
+                if current_nodes and candidate_energy >= data.params.effective_energy_limit_j - EPSILON:
+                    routes.append(_candidate_route(sortie_id, current_nodes, current_hover))
+                    sortie_id += 1
+                    current_nodes = []
+                    current_hover = {}
+                    continue
+                if not current_nodes and candidate_energy >= data.params.effective_energy_limit_j - EPSILON:
+                    raise ValueError(f"target {node_id} cannot be reached within the sortie energy limit")
+                current_nodes = candidate_nodes
+                current_hover.setdefault(node_id, 0.0)
+
+            used_energy = evaluate_uav_route(_candidate_route(sortie_id, current_nodes, current_hover), data).energy_j
+            residual_energy = data.params.effective_energy_limit_j - used_energy
+            if residual_energy <= EPSILON:
+                routes.append(_candidate_route(sortie_id, current_nodes, current_hover))
+                sortie_id += 1
+                current_nodes = []
+                current_hover = {}
+                continue
+
+            served_hover = min(remaining_hover, residual_energy / data.params.hover_power_j_per_s)
+            current_hover[node_id] = current_hover.get(node_id, 0.0) + served_hover
+            remaining_hover -= served_hover
+
+            if remaining_hover > EPSILON:
+                routes.append(_candidate_route(sortie_id, current_nodes, current_hover))
+                sortie_id += 1
+                current_nodes = []
+                current_hover = {}
+    if current_hover:
+        routes.append(_candidate_route(sortie_id, current_nodes, current_hover))
     return tuple(routes)
 ```
 
@@ -691,7 +878,7 @@ Run:
 python3 -m pytest tests/test_search.py -q
 ```
 
-Expected: `2 passed`.
+Expected: `3 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -792,10 +979,15 @@ def _assign_routes_to_uavs(routes: tuple[UAVRoute, ...], k: int, data: ProblemDa
     return tuple(sorted(assigned, key=lambda item: (item.uav_id, item.sortie_id)))
 
 
-def solve_problem1_for_k(data: ProblemData, k: int, battery_swap_time_s: float) -> Problem1Solution:
+def solve_uav_hover_plan(
+    data: ProblemData,
+    k: int,
+    battery_swap_time_s: float,
+    hover_requirements_s: dict[int, float],
+) -> Problem1Solution:
     if k < 1 or k > data.params.k_max:
         raise ValueError(f"k must be between 1 and {data.params.k_max}, got {k}")
-    hover = {target.node_id: target.base_hover_time_s for target in data.targets}
+    hover = {node_id: float(seconds) for node_id, seconds in hover_requirements_s.items() if seconds > 0}
     order = nearest_neighbor_order(data, list(hover))
     raw_routes = split_order_into_energy_feasible_routes(order, hover, data)
     routes = _assign_routes_to_uavs(raw_routes, k, data, battery_swap_time_s)
@@ -807,6 +999,16 @@ def solve_problem1_for_k(data: ProblemData, k: int, battery_swap_time_s: float) 
         routes=routes,
         total_hover_by_node=total_hover,
         summary=summarize_uav_solution(routes, data, battery_swap_time_s),
+    )
+
+
+def solve_problem1_for_k(data: ProblemData, k: int, battery_swap_time_s: float) -> Problem1Solution:
+    hover = {target.node_id: target.base_hover_time_s for target in data.targets}
+    return solve_uav_hover_plan(
+        data=data,
+        k=k,
+        battery_swap_time_s=battery_swap_time_s,
+        hover_requirements_s=hover,
     )
 ```
 
@@ -868,9 +1070,6 @@ Expected: `TypeError` because `solve_problem1_for_k` has no `improve` argument.
 Append to `c_uav_inspection/search.py`:
 
 ```python
-from c_uav_inspection.model import evaluate_uav_route
-
-
 def improve_route_by_two_opt(route: UAVRoute, data: ProblemData) -> UAVRoute:
     nodes = list(route.node_sequence[1:-1])
     if len(nodes) < 4:
@@ -909,18 +1108,19 @@ Modify the imports and function in `c_uav_inspection/problem1.py`:
 from c_uav_inspection.search import improve_route_by_two_opt, nearest_neighbor_order, split_order_into_energy_feasible_routes
 ```
 
-Replace the function signature and route construction block:
+Replace `solve_uav_hover_plan` and `solve_problem1_for_k`:
 
 ```python
-def solve_problem1_for_k(
+def solve_uav_hover_plan(
     data: ProblemData,
     k: int,
     battery_swap_time_s: float,
+    hover_requirements_s: dict[int, float],
     improve: bool = False,
 ) -> Problem1Solution:
     if k < 1 or k > data.params.k_max:
         raise ValueError(f"k must be between 1 and {data.params.k_max}, got {k}")
-    hover = {target.node_id: target.base_hover_time_s for target in data.targets}
+    hover = {node_id: float(seconds) for node_id, seconds in hover_requirements_s.items() if seconds > 0}
     order = nearest_neighbor_order(data, list(hover))
     raw_routes = split_order_into_energy_feasible_routes(order, hover, data)
     if improve:
@@ -934,6 +1134,22 @@ def solve_problem1_for_k(
         routes=routes,
         total_hover_by_node=total_hover,
         summary=summarize_uav_solution(routes, data, battery_swap_time_s),
+    )
+
+
+def solve_problem1_for_k(
+    data: ProblemData,
+    k: int,
+    battery_swap_time_s: float,
+    improve: bool = False,
+) -> Problem1Solution:
+    hover = {target.node_id: target.base_hover_time_s for target in data.targets}
+    return solve_uav_hover_plan(
+        data=data,
+        k=k,
+        battery_swap_time_s=battery_swap_time_s,
+        hover_requirements_s=hover,
+        improve=improve,
     )
 ```
 
@@ -971,7 +1187,7 @@ from pathlib import Path
 
 from c_uav_inspection.data import load_problem_data
 from c_uav_inspection.problem1 import solve_problem1_for_k
-from c_uav_inspection.problem2 import solve_ground_tsp, evaluate_closed_loop
+from c_uav_inspection.problem2 import effective_direct_threshold, solve_ground_tsp, evaluate_closed_loop
 
 
 DATA_PATH = Path("2026同济数学建模竞赛赛题/2026C数据.xlsx")
@@ -998,6 +1214,14 @@ def test_closed_loop_marks_all_base_only_targets_manual():
     assert closed.uav_phase_time_s == p1.summary.uav_phase_time_s
     assert closed.manual_count >= 1
     assert closed.closed_loop_time_s == closed.uav_phase_time_s + closed.ground_review_time_s
+
+
+def test_direct_threshold_multiplier_is_floored_by_base_hover_time():
+    data = load_problem_data(DATA_PATH)
+
+    for target in data.targets:
+        threshold = effective_direct_threshold(target, direct_threshold_multiplier=0.70)
+        assert threshold >= target.base_hover_time_s
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1020,7 +1244,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from c_uav_inspection.data import ProblemData
+from c_uav_inspection.data import ProblemData, Target
 from c_uav_inspection.model import UAVRoute, summarize_uav_solution
 
 
@@ -1041,6 +1265,15 @@ class ClosedLoopResult:
     ground_review_time_s: float
     closed_loop_time_s: float
     ground_path: tuple[str, ...]
+
+
+def effective_direct_threshold(target: Target, direct_threshold_multiplier: float) -> float:
+    if direct_threshold_multiplier <= 0:
+        raise ValueError("direct_threshold_multiplier must be positive")
+    return max(
+        target.base_hover_time_s,
+        target.direct_confirm_time_s * direct_threshold_multiplier,
+    )
 
 
 def solve_ground_tsp(data: ProblemData, manual_point_ids: tuple[str, ...]) -> GroundReviewResult:
@@ -1093,7 +1326,7 @@ def evaluate_closed_loop(
     manual_nodes: list[int] = []
     manual_points: list[str] = []
     for target in data.targets:
-        threshold = target.direct_confirm_time_s * direct_threshold_multiplier
+        threshold = effective_direct_threshold(target, direct_threshold_multiplier)
         if hover.get(target.node_id, 0.0) >= threshold:
             direct_nodes.append(target.node_id)
         else:
@@ -1120,7 +1353,7 @@ Run:
 python3 -m pytest tests/test_problem2.py -q
 ```
 
-Expected: `2 passed`.
+Expected: `3 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1153,6 +1386,19 @@ def test_joint_solver_reduces_or_matches_manual_count_against_base_only():
     assert joint.closed_loop.manual_count <= base.manual_count
     assert joint.closed_loop.closed_loop_time_s > 0
     assert all(route.node_sequence[0] == 0 and route.node_sequence[-1] == 0 for route in joint.routes)
+
+
+def test_joint_solver_direct_confirmed_nodes_meet_effective_thresholds():
+    data = load_problem_data(DATA_PATH)
+    joint = solve_joint_problem_for_k(data, k=4, direct_threshold_multiplier=0.70)
+    hover_by_node = {}
+    for route in joint.routes:
+        for node_id, seconds in route.hover_times_s.items():
+            hover_by_node[node_id] = hover_by_node.get(node_id, 0.0) + seconds
+
+    by_id = {target.node_id: target for target in data.targets}
+    for node_id in joint.closed_loop.direct_confirmed_nodes:
+        assert hover_by_node[node_id] >= effective_direct_threshold(by_id[node_id], 0.70)
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1165,13 +1411,12 @@ python3 -m pytest tests/test_problem2.py::test_joint_solver_reduces_or_matches_m
 
 Expected: import failure for `solve_joint_problem_for_k`.
 
-- [ ] **Step 3: Implement marginal-benefit direct-confirm selection**
+- [ ] **Step 3: Implement ruin-and-recreate direct-confirm selection**
 
 Append to `c_uav_inspection/problem2.py`:
 
 ```python
-from c_uav_inspection.model import evaluate_uav_route
-from c_uav_inspection.problem1 import solve_problem1_for_k
+from c_uav_inspection.problem1 import solve_uav_hover_plan
 
 
 @dataclass(frozen=True)
@@ -1180,9 +1425,14 @@ class JointSolution:
     closed_loop: ClosedLoopResult
 
 
-def _direct_confirm_score(data: ProblemData, target_id: int) -> float:
-    target = next(item for item in data.targets if item.node_id == target_id)
-    extra_hover = max(0.0, target.direct_confirm_time_s - target.base_hover_time_s)
+def _target_by_id(data: ProblemData, target_id: int):
+    return next(item for item in data.targets if item.node_id == target_id)
+
+
+def _direct_confirm_score(data: ProblemData, target_id: int, direct_threshold_multiplier: float) -> float:
+    target = _target_by_id(data, target_id)
+    threshold = effective_direct_threshold(target, direct_threshold_multiplier)
+    extra_hover = max(0.0, threshold - target.base_hover_time_s)
     manual_proxy = (
         data.ground_time_s[("P0", target.manual_point_id)]
         + data.ground_time_s[(target.manual_point_id, "P0")]
@@ -1191,19 +1441,43 @@ def _direct_confirm_score(data: ProblemData, target_id: int) -> float:
     energy_ratio = (
         data.flight_energy_j[(0, target.node_id)]
         + data.flight_energy_j[(target.node_id, 0)]
-        + target.direct_confirm_time_s * data.params.hover_power_j_per_s
+        + threshold * data.params.hover_power_j_per_s
     ) / data.params.effective_energy_limit_j
     return target.priority_weight * manual_proxy / (extra_hover + 1.0) - energy_ratio
 
 
-def _upgrade_singleton_route_to_direct_confirm(data: ProblemData, target_id: int, uav_id: int, sortie_id: int) -> UAVRoute:
-    target = next(item for item in data.targets if item.node_id == target_id)
-    return UAVRoute(
-        uav_id=uav_id,
-        sortie_id=sortie_id,
-        node_sequence=(0, target_id, 0),
-        hover_times_s={target_id: target.direct_confirm_time_s},
+def _hover_requirements_for_direct_set(
+    data: ProblemData,
+    direct_nodes: set[int],
+    direct_threshold_multiplier: float,
+) -> dict[int, float]:
+    requirements: dict[int, float] = {}
+    for target in data.targets:
+        if target.node_id in direct_nodes:
+            requirements[target.node_id] = effective_direct_threshold(target, direct_threshold_multiplier)
+        else:
+            requirements[target.node_id] = target.base_hover_time_s
+    return requirements
+
+
+def _rebuild_for_direct_set(
+    data: ProblemData,
+    k: int,
+    direct_nodes: set[int],
+    direct_threshold_multiplier: float,
+) -> JointSolution | None:
+    hover_requirements = _hover_requirements_for_direct_set(data, direct_nodes, direct_threshold_multiplier)
+    plan = solve_uav_hover_plan(
+        data=data,
+        k=k,
+        battery_swap_time_s=data.params.battery_swap_time_s,
+        hover_requirements_s=hover_requirements,
+        improve=True,
     )
+    if not plan.summary.feasible_energy or plan.summary.uav_phase_time_s > data.params.operating_horizon_s:
+        return None
+    closed = evaluate_closed_loop(data, plan.routes, direct_threshold_multiplier)
+    return JointSolution(routes=plan.routes, closed_loop=closed)
 
 
 def solve_joint_problem_for_k(
@@ -1211,33 +1485,43 @@ def solve_joint_problem_for_k(
     k: int,
     direct_threshold_multiplier: float,
 ) -> JointSolution:
-    base = solve_problem1_for_k(data, k=k, battery_swap_time_s=data.params.battery_swap_time_s, improve=True)
-    routes = list(base.routes)
-    next_sortie_by_uav = {uav_id: 0 for uav_id in range(1, k + 1)}
-    for route in routes:
-        next_sortie_by_uav[route.uav_id] = max(next_sortie_by_uav[route.uav_id], route.sortie_id)
+    best = _rebuild_for_direct_set(
+        data=data,
+        k=k,
+        direct_nodes=set(),
+        direct_threshold_multiplier=direct_threshold_multiplier,
+    )
+    if best is None:
+        raise ValueError("base hover plan is infeasible")
 
     ranked_targets = sorted(
         (target.node_id for target in data.targets),
-        key=lambda node_id: (_direct_confirm_score(data, node_id), -node_id),
+        key=lambda node_id: (_direct_confirm_score(data, node_id, direct_threshold_multiplier), -node_id),
         reverse=True,
     )
-    best_closed = evaluate_closed_loop(data, tuple(routes), direct_threshold_multiplier)
+    accepted_direct_nodes: set[int] = set(best.closed_loop.direct_confirmed_nodes)
     for target_id in ranked_targets:
-        uav_id = min(next_sortie_by_uav, key=lambda key: (next_sortie_by_uav[key], key))
-        next_sortie_by_uav[uav_id] += 1
-        candidate_route = _upgrade_singleton_route_to_direct_confirm(data, target_id, uav_id, next_sortie_by_uav[uav_id])
-        if not evaluate_uav_route(candidate_route, data).feasible_energy:
+        if target_id in accepted_direct_nodes:
             continue
-        candidate_routes = tuple([*routes, candidate_route])
-        candidate_closed = evaluate_closed_loop(data, candidate_routes, direct_threshold_multiplier)
-        if (
-            candidate_closed.uav_phase_time_s <= data.params.operating_horizon_s
-            and candidate_closed.closed_loop_time_s <= best_closed.closed_loop_time_s
-        ):
-            routes.append(candidate_route)
-            best_closed = candidate_closed
-    return JointSolution(routes=tuple(routes), closed_loop=best_closed)
+        candidate_direct_nodes = set(accepted_direct_nodes)
+        candidate_direct_nodes.add(target_id)
+        candidate = _rebuild_for_direct_set(
+            data=data,
+            k=k,
+            direct_nodes=candidate_direct_nodes,
+            direct_threshold_multiplier=direct_threshold_multiplier,
+        )
+        if candidate is None:
+            continue
+        improves_time = candidate.closed_loop.closed_loop_time_s < best.closed_loop.closed_loop_time_s
+        reduces_manual_with_small_penalty = (
+            candidate.closed_loop.manual_count < best.closed_loop.manual_count
+            and candidate.closed_loop.closed_loop_time_s <= best.closed_loop.closed_loop_time_s * 1.03
+        )
+        if improves_time or reduces_manual_with_small_penalty:
+            best = candidate
+            accepted_direct_nodes = candidate_direct_nodes
+    return best
 ```
 
 - [ ] **Step 4: Run Problem 2 tests**
@@ -1271,6 +1555,7 @@ Create `tests/test_experiments.py`:
 
 ```python
 from pathlib import Path
+import csv
 
 from c_uav_inspection.experiments import run_all_experiments
 
@@ -1286,6 +1571,11 @@ def test_run_all_experiments_writes_expected_files(tmp_path):
     assert (tmp_path / "problem2_k_comparison.csv").exists()
     assert (tmp_path / "problem2_threshold_sensitivity.csv").exists()
     assert (tmp_path / "recommended_solution.json").exists()
+
+    with (tmp_path / "problem2_k_comparison.csv").open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert "normalized_objective" in rows[0]
+    assert all(0.0 <= float(row["normalized_objective"]) <= 1.0 for row in rows)
 ```
 
 - [ ] **Step 2: Run experiment test to verify it fails**
@@ -1310,6 +1600,8 @@ import json
 from pathlib import Path
 
 from c_uav_inspection.data import load_problem_data, validate_problem_data
+from c_uav_inspection.model import summarize_uav_solution
+from c_uav_inspection.objective import bounds_from_candidates, weighted_normalized_objective
 from c_uav_inspection.problem1 import solve_problem1_for_k
 from c_uav_inspection.problem2 import solve_joint_problem_for_k
 
@@ -1321,6 +1613,21 @@ def _write_csv(path: Path, rows: list[dict[str, float | int | str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _add_normalized_objective(rows: list[dict[str, float | int | str]], weights: dict[str, float]) -> None:
+    if not rows:
+        return
+    numeric_rows = [
+        {term_name: float(row[term_name]) for term_name in weights}
+        for row in rows
+    ]
+    bounds = bounds_from_candidates(numeric_rows, tuple(weights))
+    for row, numeric in zip(rows, numeric_rows):
+        row["normalized_objective"] = round(
+            weighted_normalized_objective(numeric, bounds, weights),
+            6,
+        )
 
 
 def run_all_experiments(data_path: Path | str, output_dir: Path | str) -> None:
@@ -1344,6 +1651,12 @@ def run_all_experiments(data_path: Path | str, output_dir: Path | str) -> None:
             "load_std_s": round(solution.summary.load_std_s, 2),
             "route_count": len(solution.routes),
         })
+    _add_normalized_objective(k_rows, {
+        "uav_phase_time_s": 0.55,
+        "route_count": 0.20,
+        "total_energy_j": 0.15,
+        "load_std_s": 0.10,
+    })
     _write_csv(output / "problem1_k_comparison.csv", k_rows)
 
     swap_rows = []
@@ -1355,12 +1668,19 @@ def run_all_experiments(data_path: Path | str, output_dir: Path | str) -> None:
             "total_energy_j": round(solution.summary.total_energy_j, 2),
             "load_std_s": round(solution.summary.load_std_s, 2),
         })
+    _add_normalized_objective(swap_rows, {
+        "uav_phase_time_s": 0.55,
+        "total_energy_j": 0.15,
+        "load_std_s": 0.10,
+        "battery_swap_time_s": 0.20,
+    })
     _write_csv(output / "problem1_swap_sensitivity.csv", swap_rows)
 
     joint_k_rows = []
     best_joint = None
     for k in range(1, data.params.k_max + 1):
         joint = solve_joint_problem_for_k(data, k=k, direct_threshold_multiplier=1.0)
+        joint_summary = summarize_uav_solution(joint.routes, data, data.params.battery_swap_time_s)
         if best_joint is None or joint.closed_loop.closed_loop_time_s < best_joint.closed_loop.closed_loop_time_s:
             best_joint = joint
         joint_k_rows.append({
@@ -1370,18 +1690,38 @@ def run_all_experiments(data_path: Path | str, output_dir: Path | str) -> None:
             "ground_review_time_s": round(joint.closed_loop.ground_review_time_s, 2),
             "manual_count": joint.closed_loop.manual_count,
             "direct_confirm_count": len(joint.closed_loop.direct_confirmed_nodes),
+            "total_energy_j": round(joint_summary.total_energy_j, 2),
+            "load_std_s": round(joint_summary.load_std_s, 2),
         })
+    _add_normalized_objective(joint_k_rows, {
+        "closed_loop_time_s": 0.50,
+        "ground_review_time_s": 0.20,
+        "manual_count": 0.10,
+        "total_energy_j": 0.10,
+        "load_std_s": 0.10,
+    })
     _write_csv(output / "problem2_k_comparison.csv", joint_k_rows)
 
     threshold_rows = []
     for multiplier in (0.70, 0.85, 1.00, 1.15, 1.30):
         joint = solve_joint_problem_for_k(data, k=3, direct_threshold_multiplier=multiplier)
+        joint_summary = summarize_uav_solution(joint.routes, data, data.params.battery_swap_time_s)
         threshold_rows.append({
             "direct_threshold_multiplier": multiplier,
             "closed_loop_time_s": round(joint.closed_loop.closed_loop_time_s, 2),
+            "ground_review_time_s": round(joint.closed_loop.ground_review_time_s, 2),
             "manual_count": joint.closed_loop.manual_count,
             "direct_confirm_count": len(joint.closed_loop.direct_confirmed_nodes),
+            "total_energy_j": round(joint_summary.total_energy_j, 2),
+            "load_std_s": round(joint_summary.load_std_s, 2),
         })
+    _add_normalized_objective(threshold_rows, {
+        "closed_loop_time_s": 0.50,
+        "ground_review_time_s": 0.20,
+        "manual_count": 0.10,
+        "total_energy_j": 0.10,
+        "load_std_s": 0.10,
+    })
     _write_csv(output / "problem2_threshold_sensitivity.csv", threshold_rows)
 
     assert best_joint is not None
@@ -1694,10 +2034,13 @@ Create `report/c_uav_inspection_results.md` with this structure:
 
 问题 1 建立多无人机、多趟次、带单趟能耗约束的路径与悬停时间联合优化模型。决策变量包括无人机任务分配、每趟访问顺序、各目标点累计悬停时间和各无人机完成时间。目标函数综合系统完成时间、高优先级点提前完成、总能耗和负载均衡。
 
+由于各目标项量纲和数量级不同，论文中的加权目标函数必须先对每一项进行归一化。本文采用候选方案集上的 min-max 归一化或可解释的理论上下界，将时间、能耗、负载均衡和人工复核指标统一映射到 `[0,1]` 后再加权求和，避免能耗项因数量级过大吞噬时间项。
+
 核心约束为：
 
 ```text
 每个目标点累计悬停时间 >= base_hover_time_s
+目标点悬停时间可跨无人机和跨趟次拆分累计
 每趟任务飞行能耗 + 悬停能耗 <= effective_energy_limit_J
 每趟任务从节点 0 出发并回到节点 0
 无人机多趟任务之间计入 battery_swap_time_s
@@ -1706,11 +2049,11 @@ Create `report/c_uav_inspection_results.md` with this structure:
 
 ## 3. 问题2模型说明
 
-问题 2 在问题 1 的基础上引入直接确认变量。若目标点累计悬停时间达到 `direct_confirm_time_s`，则该点由无人机直接确认；否则进入物业复核集合。物业人员从 P0 出发，访问全部待复核点后返回 P0，形成地面 TSP 子问题。闭环总完成时间定义为无人机阶段完成时间与物业复核阶段完成时间之和。
+问题 2 在问题 1 的基础上引入直接确认变量。若目标点累计悬停时间达到 `max(base_hover_time_s, direct_confirm_time_s * multiplier)`，则该点由无人机直接确认；否则进入物业复核集合。物业人员从 P0 出发，且必须等待全部无人机空中巡检结束后，访问全部待复核点再返回 P0，形成地面 TSP 子问题。闭环总完成时间定义为无人机阶段完成时间与物业复核阶段完成时间之和。
 
 ## 4. 算法说明
 
-算法采用“可行路径构造 + 局部搜索 + 物业 TSP 精确动态规划”的组合。首先按飞行时间最近邻生成基础巡检顺序，并按单趟能耗上限切分为可行出航任务；随后使用 2-opt 改善单趟访问顺序；最后通过边际替代收益判断哪些目标点值得增加无人机悬停以减少物业复核。全流程不引入 ML 或 DL。
+算法采用“连续悬停需求切割 + 可行路径构造 + 2-opt 局部搜索 + 直接确认重建搜索 + 物业 TSP 精确动态规划”的组合。首先按飞行时间最近邻生成基础巡检顺序，并按单趟能耗上限为各目标分配可拆分悬停时间；若某趟剩余电量不足以完成某点全部需求，则服务该点可行的部分悬停时间，并将剩余需求留给后续趟次。问题 2 中不采用超限后单建一趟的短视贪心，而是按空地替代收益排序，每次尝试扩展直接确认集合后整体重建无人机路线和悬停分配，再用闭环总时间和人工复核数量判断是否接受。全流程不引入 ML 或 DL，MILP 或枚举只作为小规模校验工具。
 
 ## 5. 输出文件
 
@@ -1720,10 +2063,11 @@ Create `report/c_uav_inspection_results.md` with this structure:
 - `outputs/c_uav_inspection/problem2_threshold_sensitivity.csv`：直接确认阈值敏感性结果。
 - `outputs/c_uav_inspection/recommended_solution.json`：推荐巡检方案。
 - `outputs/c_uav_inspection/*.png`：论文图表。
+各 CSV 表中的 `normalized_objective` 为归一化后的多目标评分，只用于同一实验表内方案比较。
 
 ## 6. 论文写作建议
 
-论文主线应强调：问题 1 解决最短基础空中覆盖，问题 2 解决无人机直接确认与物业复核的替代权衡，最终通过边际收益递减与敏感性分析给出无人机配置建议。创新点集中在连续悬停时间分配、空地替代收益、闭环 Pareto 权衡和配置规模边际收益分析。
+论文主线应强调：问题 1 解决最短基础空中覆盖，问题 2 解决无人机直接确认与物业复核的替代权衡，最终通过边际收益递减与敏感性分析给出无人机配置建议。创新点集中在归一化多目标评价、连续悬停时间分配、空地替代收益、闭环 Pareto 权衡和配置规模边际收益分析。
 ```
 
 - [ ] **Step 3: Verify report references generated files**
@@ -1837,14 +2181,15 @@ Write a short Chinese summary for the paper team containing:
 ```text
 已完成 C 题可复现实验流程。
 主模型：多无人机多趟能耗约束 VRP + 悬停时间分配 + 物业复核 TSP。
+关键修正：多目标归一化评分 + 连续悬停拆分 + 直接确认重建搜索 + 阈值敏感性下界约束。
 未引入 ML/DL。
 核心输出：K 对比、换电敏感性、阈值敏感性、推荐巡检方案、路径图。
-论文重点：连续悬停时间分配、空地替代收益、边际收益递减配置建议。
+论文重点：归一化多目标评价、连续悬停时间分配、空地替代收益、边际收益递减配置建议。
 ```
 
 ## Self-Review
 
-- Spec coverage: The plan covers data loading, consistency checks, Problem 1, Problem 2, no-ML assumption, algorithm design, sensitivity experiments, figures, and report output.
+- Spec coverage: The plan covers data loading, consistency checks, normalized objectives, continuous hover splitting, Problem 1, Problem 2, threshold flooring, ruin-and-recreate direct-confirm search, no-ML assumption, sensitivity experiments, figures, and report output.
 - Placeholder scan: No placeholder markers, no unspecified implementation step, and no undefined final deliverable.
-- Type consistency: `ProblemData`, `Target`, `UAVRoute`, `Problem1Solution`, `ClosedLoopResult`, and `JointSolution` are introduced before use and reused consistently.
+- Type consistency: `ProblemData`, `Target`, `ObjectiveTermBounds`, `UAVRoute`, `Problem1Solution`, `ClosedLoopResult`, and `JointSolution` are introduced before use and reused consistently.
 - Scope check: This is one coherent research workflow, not multiple independent subsystems. The implementation can be completed task by task.

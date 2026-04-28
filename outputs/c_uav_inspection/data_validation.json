@@ -1,0 +1,7 @@
+{
+  "target_count": 16,
+  "base_hover_sum_s": 790.0,
+  "direct_hover_sum_s": 5210.0,
+  "confirm_thresholds_valid": true,
+  "max_single_direct_confirm_energy_j": 132986.0
+}
