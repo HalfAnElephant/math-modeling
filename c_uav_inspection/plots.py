@@ -469,8 +469,21 @@ def _plot_recommended_routes(data_path: Path, result_dir: Path) -> None:
     with json_path.open("r", encoding="utf-8") as handle:
         sol: dict[str, Any] = json.load(handle)
 
-    direct_nodes = {int(node) for node in sol.get("direct_confirmed_nodes", [])}
-    manual_targets = {int(node) for node in sol.get("manual_target_nodes", [])}
+    dc_raw = sol.get("direct_confirmed_nodes", "")
+    if isinstance(dc_raw, list):
+        direct_nodes = {int(n) for n in dc_raw}
+    elif isinstance(dc_raw, str) and dc_raw.strip():
+        direct_nodes = {int(n) for n in dc_raw.split()}
+    else:
+        direct_nodes: set[int] = set()
+
+    mt_raw = sol.get("manual_target_nodes", "")
+    if isinstance(mt_raw, list):
+        manual_targets = {int(n) for n in mt_raw}
+    elif isinstance(mt_raw, str) and mt_raw.strip():
+        manual_targets = {int(n) for n in mt_raw.split()}
+    else:
+        manual_targets: set[int] = set()
 
     # Build node_id -> (x, y, z)
     node_coords: dict[int, tuple[float, float, float]] = {}
