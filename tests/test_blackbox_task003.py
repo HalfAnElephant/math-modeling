@@ -189,6 +189,7 @@ def test_nn_order_tie_breaking_chooses_smaller_id() -> None:
     synthetic_data = ProblemData(
         params=synthetic_params,
         targets=[],
+        manual_points={},
         flight_time_s=synthetic_ft,
         flight_energy_j=synthetic_fe,
         ground_time_s={},
@@ -227,6 +228,7 @@ def test_nn_order_tie_breaking_on_intermediate_node() -> None:
     synthetic_data = ProblemData(
         params=synthetic_params,
         targets=[],
+        manual_points={},
         flight_time_s=synthetic_ft,
         flight_energy_j=synthetic_fe,
         ground_time_s={},
@@ -566,6 +568,7 @@ def test_split_unreachable_target_raises_value_error() -> None:
     tiny_data = ProblemData(
         params=tiny_params,
         targets=data.targets,
+        manual_points=data.manual_points,
         flight_time_s=data.flight_time_s,
         flight_energy_j=data.flight_energy_j,
         ground_time_s=data.ground_time_s,
@@ -594,6 +597,7 @@ def test_split_zero_hover_power_raises_value_error() -> None:
     bad_data = ProblemData(
         params=zero_power,
         targets=data.targets,
+        manual_points=data.manual_points,
         flight_time_s=data.flight_time_s,
         flight_energy_j=data.flight_energy_j,
         ground_time_s=data.ground_time_s,
@@ -625,6 +629,7 @@ def test_split_roundtrip_exactly_equals_energy_limit_raises_value_error() -> Non
     exact_data = ProblemData(
         params=exact_limit,
         targets=data.targets,
+        manual_points=data.manual_points,
         flight_time_s=data.flight_time_s,
         flight_energy_j=data.flight_energy_j,
         ground_time_s=data.ground_time_s,
