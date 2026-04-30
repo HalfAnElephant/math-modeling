@@ -23,6 +23,7 @@ from c_uav_inspection.search import (
     improve_route_by_two_opt,
     nearest_neighbor_order,
     split_order_into_energy_feasible_routes,
+    split_order_into_energy_feasible_routes_no_split,
 )
 
 
@@ -107,6 +108,7 @@ def solve_uav_hover_plan(
     battery_swap_time_s: float,
     hover_requirements_s: dict[int, float],
     improve: bool = False,
+    allow_split_hover: bool = True,
 ) -> Problem1Solution:
     """General-purpose multi-UAV hover plan solver.
 
@@ -116,6 +118,9 @@ def solve_uav_hover_plan(
         battery_swap_time_s: Battery swap time in seconds.
         hover_requirements_s: Dict mapping node_id -> required hover seconds.
         improve: If True, apply 2-opt local search to each route.
+        allow_split_hover: If True (default), a target's hover demand may
+            span multiple sorties. If False, each target must be fully
+            served within exactly one sortie.
 
     Returns:
         Problem1Solution with assigned UAV routes and summary.
@@ -129,8 +134,15 @@ def solve_uav_hover_plan(
     node_ids = list(hover_requirements_s.keys())
     order = nearest_neighbor_order(data, node_ids)
 
-    # Split into energy-feasible routes with divisible hover
-    raw_routes = split_order_into_energy_feasible_routes(order, hover_requirements_s, data)
+    # Split into energy-feasible routes
+    if allow_split_hover:
+        raw_routes = split_order_into_energy_feasible_routes(
+            order, hover_requirements_s, data
+        )
+    else:
+        raw_routes = split_order_into_energy_feasible_routes_no_split(
+            order, hover_requirements_s, data
+        )
 
     # Apply 2-opt improvement if requested
     if improve:
@@ -166,6 +178,7 @@ def solve_problem1_for_k(
     k: int,
     battery_swap_time_s: float,
     improve: bool = False,
+    allow_split_hover: bool = True,
 ) -> Problem1Solution:
     """Solve Problem 1 for k UAVs with base hover requirements.
 
@@ -177,6 +190,9 @@ def solve_problem1_for_k(
         k: Number of UAVs.
         battery_swap_time_s: Battery swap time in seconds.
         improve: If True, apply 2-opt local search to each route.
+        allow_split_hover: If True (default), a target's hover demand may
+            span multiple sorties. If False, each target must be fully
+            served within exactly one sortie.
 
     Returns:
         Problem1Solution with the computed plan.
@@ -195,4 +211,5 @@ def solve_problem1_for_k(
         battery_swap_time_s,
         hover_requirements_s,
         improve=improve,
+        allow_split_hover=allow_split_hover,
     )

@@ -9,8 +9,10 @@ from c_uav_inspection.data import ProblemData, load_problem_data
 from c_uav_inspection.model import evaluate_uav_route
 from c_uav_inspection.search import (
     EPSILON,
+    InfeasibleError,
     nearest_neighbor_order,
     split_order_into_energy_feasible_routes,
+    split_order_into_energy_feasible_routes_no_split,
 )
 
 DATA_PATH = Path("2026同济数学建模竞赛赛题/2026C数据.xlsx")
@@ -145,3 +147,70 @@ def test_split_order_allows_one_target_hover_to_span_multiple_sorties() -> None:
     assert len(routes) >= 2
     assert served == pytest.approx(hover[target_id])
     assert all(evaluate_uav_route(route, data).feasible_energy for route in routes)
+
+
+# ---------------------------------------------------------------------------
+# Tests for split_order_into_energy_feasible_routes_no_split
+# ---------------------------------------------------------------------------
+
+
+def test_no_split_routes_never_split_positive_hover() -> None:
+    """Each positive-demand target is fully served in exactly one sortie.
+
+    In the no-split variant, a target's entire hover demand must be packed
+    into a single sortie. This test verifies that no target with positive
+    demand appears in more than one route.
+    """
+    data = load_problem_data(DATA_PATH)
+    hover: dict[int, float] = {
+        target.node_id: target.base_hover_time_s for target in data.targets
+    }
+    order = nearest_neighbor_order(data, list(hover.keys()))
+
+    routes = split_order_into_energy_feasible_routes_no_split(order, hover, data)
+
+    # Count how many routes each target appears in
+    appearances: dict[int, int] = {}
+    for route in routes:
+        for node_id, h in route.hover_times_s.items():
+            if h > EPSILON:
+                appearances[node_id] = appearances.get(node_id, 0) + 1
+
+    for node_id, count in appearances.items():
+        assert count == 1, (
+            f"Target {node_id} appears in {count} routes, "
+            f"expected exactly 1 for no_split variant"
+        )
+
+    # All routes must be energy-feasible
+    assert all(evaluate_uav_route(r, data).feasible_energy for r in routes)
+
+    # Total served hover must match demand
+    served: dict[int, float] = {}
+    for route in routes:
+        for node_id, seconds in route.hover_times_s.items():
+            served[node_id] = served.get(node_id, 0.0) + seconds
+    assert served == pytest.approx(hover)
+
+
+def test_no_split_raises_infeasible_when_target_exceeds_energy() -> None:
+    """When a single target's full demand exceeds a sortie energy budget,
+    the no-split variant must raise InfeasibleError.
+    """
+    data = load_problem_data(DATA_PATH)
+    target_id = 16
+    # Compute hover capacity for this target as a standalone sortie
+    hover_power = data.params.hover_power_j_per_s
+    limit_j = data.params.effective_energy_limit_j
+    roundtrip = (
+        data.flight_energy_j[(0, target_id)]
+        + data.flight_energy_j[(target_id, 0)]
+    )
+    max_hover_s = (limit_j - roundtrip) / hover_power
+    # Demand exceeds single-sortie capacity
+    hover = {target_id: max_hover_s + 50.0}
+
+    with pytest.raises(InfeasibleError, match="cannot fit"):
+        split_order_into_energy_feasible_routes_no_split(
+            (target_id,), hover, data
+        )

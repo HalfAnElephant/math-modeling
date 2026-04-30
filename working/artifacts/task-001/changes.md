@@ -1,8 +1,11 @@
 # Changes: Task-001
 
 ## Files
-- [mod] c_uav_inspection/data.py
-- [mod] tests/test_data.py
+- [mod] c_uav_inspection/problem1_time.py
+- [mod] c_uav_inspection/experiments.py
+- [mod] tests/test_problem1_time.py
+- [mod] tests/test_experiments.py
+- [mod] working/artifacts/task-001/implement-review-results.md
 
 ## Summary
-Resolved CR-006 (the last Pending issue): added input validation to `_read_matrix_sheet` consistent with `_read_uav_params` and `_read_targets`. Changes include: None-row skipping (prevents TypeError on empty rows), break on fully empty rows (end-of-data signal), flexible `max_row=max(ws.max_row, 4)` (instead of hardcoded 20). Added 2 regression tests for CR-006. Fixed a SyntaxWarning in test docstring. All 13 tests pass and all changes are committed. All Pending issues from implement-review-results.md are now resolved.
+Resolved CR-007 (add optional candidates param to time-priority solver to avoid redundant precomputation), CR-008 (merge duplicate packed-solver experiment functions), and CR-009 (add error-path test coverage for time-priority solver). Resolved all remaining Pending review issues (SR-005, SR-008, SR-009, SR-010, SR-011) as Don't Fix — these are correctly scoped to improvement subplan 01, not the original plan's Task 001.

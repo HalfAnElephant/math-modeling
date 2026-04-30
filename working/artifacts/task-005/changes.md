@@ -1,26 +1,17 @@
 # Changes: Task-005
 
 ## Files
-- [new] tests/test_experiments.py
-- [new] c_uav_inspection/experiments.py
-- [new] tests/test_plots.py
-- [new] c_uav_inspection/plots.py
-- [new] report/c_uav_inspection_results.md
-- [new] outputs/c_uav_inspection/data_validation.json
-- [new] outputs/c_uav_inspection/problem1_k_comparison.csv
-- [new] outputs/c_uav_inspection/problem1_swap_sensitivity.csv
-- [new] outputs/c_uav_inspection/problem2_k_comparison.csv
-- [new] outputs/c_uav_inspection/problem2_threshold_sensitivity.csv
-- [new] outputs/c_uav_inspection/recommended_solution.json
-- [new] outputs/c_uav_inspection/problem1_k_comparison.png
-- [new] outputs/c_uav_inspection/problem2_threshold_sensitivity.png
-- [new] outputs/c_uav_inspection/recommended_routes.png
+- [new] tests/conftest.py
+- [mod] tests/test_exact.py
+- [mod] tests/test_experiments.py
+- [mod] tests/test_plots.py
+- [mod] c_uav_inspection/experiments.py
+- [mod] c_uav_inspection/plots.py
 
 ## Summary
-Implemented experiments, plots, and paper results for Problem C multi-UAV inspection. The experiments module generates CSV comparison tables (K=1..4, swap sensitivity, threshold sensitivity), JSON data validation, and a recommended solution. The plots module produces PNG charts (K-comparison bar chart, threshold sensitivity line chart, route map). The report document provides a complete results writeup for paper inclusion.
-
-## Review Fixes
-- CR-001: `_add_normalized_objective` now returns new rows instead of mutating input
-- CR-002: Removed duplicate `summarize_uav_solution` calls in Problem 2 experiments
-- CR-003: `generate_all_figures` now raises `FileNotFoundError` when input files are missing
-- CR-004: Added `UAVRoute` and `ProblemData` type annotations on helper functions
+Fixed all Pending issues from implement-review-results.md:
+- SR-001: Extracted _make_small_data to tests/conftest.py as a pytest fixture (make_small_data). Updated test_exact.py and test_experiments.py to use the fixture. Removed unused imports.
+- SR-004: Removed the _add_normalized_objective call in _run_problem2_exact_enumeration that was re-normalizing against only the top-20 subset. Each DirectSetEvaluation already carries the correct normalized_objective computed against all feasible evaluations.
+- CR-005: Fixed plots.py _plot_problem1_k_comparison to read problem1_k_comparison_current_packed.csv (matching what experiments.py writes). Updated test_plots.py error match pattern accordingly.
+- CR-007: Replaced brittle exact float assertions in test_problem2_baseline_comparison_base_only_row and test_problem1_swap_sensitivity_k1_uses_critical_path with property-based assertions (closed_loop = uav + ground, swap delta = time delta).
+- SR-002, SR-003, CR-006: Marked Don't Fix (plan/implementation mismatch per IMPROVEMENT_PLAN subplan 05).

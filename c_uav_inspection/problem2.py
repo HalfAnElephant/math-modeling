@@ -43,8 +43,10 @@ class ClosedLoopResult:
     Attributes:
         direct_confirmed_nodes: Target node_ids that meet the effective
             direct-confirm threshold and are confirmed by UAV alone.
+        manual_target_nodes: Target node_ids requiring ground personnel review.
         manual_nodes: Manual point IDs requiring ground personnel review.
         manual_count: Number of distinct manual review points.
+        weighted_manual_cost: Sum of priority_weight over manual_target_nodes.
         uav_phase_time_s: UAV phase duration (from summarize_uav_solution).
         ground_review_time_s: Total time for ground personnel (TSP + service).
         closed_loop_time_s: Total closed-loop time = uav_phase + ground_review.
@@ -52,8 +54,10 @@ class ClosedLoopResult:
     """
 
     direct_confirmed_nodes: tuple[int, ...]
+    manual_target_nodes: tuple[int, ...]
     manual_nodes: tuple[str, ...]
     manual_count: int
+    weighted_manual_cost: int
     uav_phase_time_s: float
     ground_review_time_s: float
     closed_loop_time_s: float
@@ -272,7 +276,9 @@ def evaluate_closed_loop(
 
     # Classify targets: direct-confirmed vs manual review needed
     direct_confirmed: list[int] = []
+    manual_target_nodes: list[int] = []
     manual_point_ids: list[str] = []
+    weighted_manual_cost: int = 0
 
     for target in data.targets:
         threshold = effective_direct_threshold(target, direct_threshold_multiplier)
@@ -281,7 +287,9 @@ def evaluate_closed_loop(
         if cumulative >= threshold - 1e-9:  # EPSILON tolerance
             direct_confirmed.append(target.node_id)
         else:
+            manual_target_nodes.append(target.node_id)
             manual_point_ids.append(target.manual_point_id)
+            weighted_manual_cost += target.priority_weight
 
     # Compute UAV phase time
     summary = summarize_uav_solution(
@@ -296,8 +304,10 @@ def evaluate_closed_loop(
 
     return ClosedLoopResult(
         direct_confirmed_nodes=tuple(direct_confirmed),
+        manual_target_nodes=tuple(sorted(manual_target_nodes)),
         manual_nodes=tuple(sorted(set(manual_point_ids))),
         manual_count=len(set(manual_point_ids)),
+        weighted_manual_cost=weighted_manual_cost,
         uav_phase_time_s=uav_phase_time_s,
         ground_review_time_s=ground_result.total_time_s,
         closed_loop_time_s=closed_loop_time_s,
@@ -387,7 +397,11 @@ def _direct_confirm_score(
         else 1.0
     )
 
-    return ground_savings / (1.0 + max(energy_penalty, 0.0) + extra_hover_cost)
+    priority = max(target.priority_weight, 1)
+    return (
+        priority * ground_savings
+        / (1.0 + max(energy_penalty, 0.0) + extra_hover_cost)
+    )
 
 
 def _hover_requirements_for_direct_set(
@@ -426,6 +440,7 @@ def _rebuild_for_direct_set(
     k: int,
     direct_nodes: tuple[int, ...],
     direct_threshold_multiplier: float,
+    allow_split_hover: bool = True,
 ) -> JointSolution | None:
     """Rebuild all UAV routes for a given direct-confirm set.
 
@@ -440,6 +455,9 @@ def _rebuild_for_direct_set(
         k: Number of UAVs.
         direct_nodes: Node IDs to directly confirm.
         direct_threshold_multiplier: Multiplier for direct-confirm threshold.
+        allow_split_hover: If True (default), a target's hover demand may
+            span multiple sorties. If False, each target must be fully
+            served within exactly one sortie.
 
     Returns:
         JointSolution if feasible, None otherwise.
@@ -454,6 +472,7 @@ def _rebuild_for_direct_set(
             data.params.battery_swap_time_s,
             requirements,
             improve=True,
+            allow_split_hover=allow_split_hover,
         )
     except InfeasibleError:
         return None
@@ -471,6 +490,8 @@ def solve_joint_problem_for_k(
     data: ProblemData,
     k: int,
     direct_threshold_multiplier: float,
+    allow_split_hover: bool = True,
+    manual_reduction_time_tolerance: float = 1.03,
 ) -> JointSolution:
     """Solve Problem 2: joint UAV+ground optimization via rebuild search.
 
@@ -479,8 +500,10 @@ def solve_joint_problem_for_k(
     Each candidate triggers a complete route rebuild. A candidate is
     accepted if:
       - closed_loop_time strictly decreases; or
-      - manual_count decreases and closed_loop_time is within 1.03x of
-        the current best.
+      - weighted_manual_cost decreases and closed_loop_time is within
+        manual_reduction_time_tolerance x of the current best; or
+      - manual_count decreases and closed_loop_time is within
+        manual_reduction_time_tolerance x of the current best.
 
     IMPORTANT: This uses rebuild search (ruin-and-recreate), not greedy
     single-point modification.
@@ -489,14 +512,30 @@ def solve_joint_problem_for_k(
         data: Problem dataset.
         k: Number of UAVs.
         direct_threshold_multiplier: Multiplier for direct-confirm threshold.
+        allow_split_hover: If True (default), a target's hover demand may
+            span multiple sorties. If False, each target must be fully
+            served within exactly one sortie.
+        manual_reduction_time_tolerance: Tolerance factor for accepting a
+            candidate when weighted_manual_cost or manual_count decreases
+            but closed_loop_time increases. Must be >= 1.0.
 
     Returns:
         JointSolution with optimized routes and closed-loop results.
+
+    Raises:
+        ValueError: If manual_reduction_time_tolerance < 1.0.
     """
+    if manual_reduction_time_tolerance < 1.0:
+        raise ValueError(
+            f"manual_reduction_time_tolerance must be >= 1.0, "
+            f"got {manual_reduction_time_tolerance}"
+        )
+
     # Start with empty direct confirm set (all targets base hover only)
     empty_direct: tuple[int, ...] = ()
     current = _rebuild_for_direct_set(
-        data, k, empty_direct, direct_threshold_multiplier
+        data, k, empty_direct, direct_threshold_multiplier,
+        allow_split_hover=allow_split_hover,
     )
     if current is None:
         raise RuntimeError(
@@ -522,7 +561,8 @@ def solve_joint_problem_for_k(
         # Try adding this candidate to the direct-confirm set
         new_direct_set = tuple(sorted(current_direct_set | {node_id}))
         candidate_solution = _rebuild_for_direct_set(
-            data, k, new_direct_set, direct_threshold_multiplier
+            data, k, new_direct_set, direct_threshold_multiplier,
+            allow_split_hover=allow_split_hover,
         )
 
         if candidate_solution is None:
@@ -533,11 +573,21 @@ def solve_joint_problem_for_k(
         cur_closed_time = current.closed_loop.closed_loop_time_s
         new_manual = candidate_solution.closed_loop.manual_count
         cur_manual = current.closed_loop.manual_count
+        new_weighted = candidate_solution.closed_loop.weighted_manual_cost
+        cur_weighted = current.closed_loop.weighted_manual_cost
 
         accepted = False
         if new_closed_time < cur_closed_time - 1e-9:
             accepted = True
-        elif new_manual < cur_manual and new_closed_time <= cur_closed_time * 1.03 + 1e-9:
+        elif (
+            new_weighted < cur_weighted
+            and new_closed_time <= cur_closed_time * manual_reduction_time_tolerance + 1e-9
+        ):
+            accepted = True
+        elif (
+            new_manual < cur_manual
+            and new_closed_time <= cur_closed_time * manual_reduction_time_tolerance + 1e-9
+        ):
             accepted = True
 
         if accepted:

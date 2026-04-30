@@ -22,6 +22,19 @@
 - **Description**: `solve_uav_hover_plan` accepts a `hover_requirements_s: dict[int, float]` parameter, but there is no black-box test verifying that it properly rejects negative values in this dict. While negative values are eventually caught by the delegated `split_order_into_energy_feasible_routes` (which raises `ValueError`), the error message references the internal parameter name "hover_times_s" rather than the public API parameter name "hover_requirements_s". A direct black-box test calling `solve_uav_hover_plan` with negative hover_requirements_s would: (a) verify the error propagates correctly from the top-level API, and (b) reveal the abstraction leak in the error message. The existing negative tests for `solve_uav_hover_plan` only cover k (lines 944-971) and battery_swap_time_s (lines 974-981), not hover_requirements_s.
 - **Decision Reason**: Fixed. Two black-box tests added at test_blackbox_task003.py: (1) `test_hover_plan_negative_hover_requirements_raises_value_error` (line 1183) — mixed negative/positive hover dict raises ValueError. (2) `test_hover_plan_all_negative_hover_rejected` (line 1196) — all-negative hover dict raises ValueError. Both call `solve_uav_hover_plan` directly via the public API. Independently verified: both tests pass. 
 
+### SR-005: Duplicate table numbers 表4 and 表5 in paper after subplan 03 additions
+- **Status**: Don't Fix
+- **Description**: The subplan 03 Step 12 explicitly requires: "确认表号连续，引用一致" (verify table numbers are consecutive and references are consistent). After adding new tables for time-priority K-comparison (section 6.1.2), parallel route count ablation (section 6.1.3), and K=1 swap sensitivity (section 6.2), two table number collisions exist in the paper (`report/c_uav_inspection_paper.md`):
+  (a) **表4 collision**: Line 367 `表4 问题1 time-priority方案不同无人机数量对比` (section 6.1.2, NEW) collides with Line 409 `表4 问题1推荐基本巡检航次（$K=2$）` (section 6.1.4, PRE-EXISTING, NOT renumbered). The pre-existing 表4 in section 6.1.4 should be 表6 (or whatever follows the new numbering).
+  (b) **表5 collision**: Line 386 `表5 问题1并行航次数量消融` (section 6.1.3, NEW) collides with Line 420 `表5 问题1换电时间敏感性（$K=1$，换电进入关键路径）` (section 6.2, NEW). Both tables were added by subplan 03 but given the same table number.
+  The correct numbering through section 6.2 should be: 表3 (packed K-comparison), 表4 (time-priority K-comparison), 表5 (ablation), 表6 (aircraft arrangement), 表7 (K1 swap sensitivity), 表8 (K4 swap reference). All subsequent tables (baseline comparison, K-comparison, etc.) would shift accordingly.
+- **Decision Reason**: Don't Fix — Paper content (report/c_uav_inspection_paper.md) belongs to original plan Task 005 (Experiments, Plots & Paper), not Task 003 (Divisible Hover & Problem 1). This issue is a plan mismatch between the review scope and the original plan Task 003 definition. Executing IMPROVEMENT_PLAN subplan 03, not original plan Task 003.
+
+### SR-006: Recommended solution in section 6.3 baseline comparison table inconsistent with section 6.4 K-comparison table for same K=4, alpha=1.0 configuration
+- **Status**: Don't Fix
+- **Description**: The subplan 03 Section 5 Step 11 says the recommended solution row in the baseline comparison table must be read from `problem2_baseline_comparison.csv` second row. The new section 6.3 baseline comparison table (表7) shows the recommended solution as: T=3302.84 s, manual count=9, direct confirm count=7, C_M=21, T_u=633.84. However, the adjacent section 6.4 K-comparison table (表8, originally 表6) shows K=4, alpha=1.0 as: T=2900.79 s, manual count=7, direct confirm count=9, C_M=20, T_u=631.79. Both claim to represent K=4, alpha=1.0, but the two tables describe completely different recommended solutions (different direct confirm sets, different manual counts, different closed-loop times). Section 6.5 (推荐闭环方案) also remains consistent with section 6.4's old data (9 direct confirm, 7 manual), not with section 6.3's new data. The root cause is that sections 6.4 and 6.5 contain data generated before priority weight changes (subplan 02) and were NOT regenerated when subplan 03 inserted the new baseline comparison table. This makes the paper self-contradictory about its own recommended solution. The subplan 03 requirement to use "从CSV读取" (read from CSV) values was correctly followed for section 6.3, but adjacent sections were left stale, creating a cross-section inconsistency.
+- **Decision Reason**: Don't Fix — Paper content (report/c_uav_inspection_paper.md) belongs to original plan Task 005 (Experiments, Plots & Paper), not Task 003 (Divisible Hover & Problem 1). This issue is a plan mismatch between the review scope and the original plan Task 003 definition. Executing IMPROVEMENT_PLAN subplan 03, not original plan Task 003.
+
 ## Code Review Issues
 
 ### CR-001: Infinite loop in split_order_into_energy_feasible_routes when hover_times_s has node not in order
@@ -276,3 +289,49 @@ All 192 tests pass (85 black-box, 10 plan-specified white-box, remainder from pr
 | tests/test_blackbox_task003.py | 85 (all black-box) | 85 passed |
 
 **No new Spec Review issues identified.** All SR-001 through SR-004 have been independently verified as resolved in code and testing.
+
+### Independent Re-verification (2026-04-29)
+
+Line-by-line review of all Task 003 implementation and test files performed independently.
+
+**Code review re-verification results:**
+
+| Issue | Fix Location | Status | Notes |
+|-------|-------------|--------|-------|
+| CR-001 | search.py:160-168 | PASS | Pre-validation catches hover keys not in order before while loop |
+| CR-002 | test_blackbox_task003.py:933-951 | PASS | solve_problem1_for_k k=0, k=-1, k=-100 all raise ValueError |
+| CR-003 | problem1.py:123-126, 184-187 | PASS | Both entry points validate battery_swap_time_s < 0 |
+| CR-004 | test_blackbox_task003.py:1028 | PASS | Excess bound tightened to 5e-3 (previously 450s) |
+| CR-005 | problem1.py:13-15 | PASS | evaluate_uav_route import at top level |
+| CR-006 | search.py:63-66 | PASS | Duplicate node_ids raise ValueError |
+| CR-007 | search.py:172-176 | PASS | Zero hover_power raises ValueError |
+| CR-008 | search.py:209-243 | PASS | One-way arrival energy, single return leg per sortie |
+| CR-009 | search.py:68-74 | PASS | Nonexistent node IDs raise ValueError |
+| CR-010 | search.py:130-137 | PASS | Negative hover demand raises ValueError |
+| CR-011 | test_blackbox_task003.py:1080-1135 | PASS | Improve-flag tests compute both improve=False/True, assert non-degradation |
+| CR-012 | search.py:57-60 | PASS | Depot 0 in node_ids raises ValueError |
+| CR-013 | search.py:186 | PASS | roundtrip >= limit raises InfeasibleError, prevents infinite loop |
+| SR-001 | search.py:249-250 | PASS | Partial hover triggers break from inner for loop |
+| SR-002 | test_blackbox_task003.py:400-458 | PASS | Black-box test verifies partial hover ends sortie immediately |
+| SR-003 | test_blackbox_task003.py:150-245 | PASS | Two synthetic-data tie-breaking tests |
+| SR-004 | test_blackbox_task003.py:1183-1204 | PASS | Black-box negative hover_requirements_s tests |
+
+**Independent code quality assessment:**
+
+- Separation of concerns: PASS — search.py (route construction), problem1.py (solution assembly)
+- Error handling: PASS — comprehensive input validation at all public API boundaries, InfeasibleError for planning infeasibility
+- Type safety: PASS — complete type annotations on all functions, frozen dataclasses
+- DRY: PASS — `_known_node_ids` and `_extract_visited_nodes` helpers
+- Immutability: PASS — frozen dataclass (Problem1Solution), tuple returns, dict copies
+- Edge cases: PASS — empty inputs, zero/negative hover, battery capacity, roundtrip==limit, depot in node_ids, duplicate IDs, nonexistent IDs
+- File sizes: search.py 335 lines, problem1.py 198 lines (both under 800)
+- Function sizes: all under 50 lines
+- Naming: clear, consistent, descriptive
+
+**Test execution results (all task-003 tests):**
+- tests/test_search.py: 7 passed (3 plan + 4 regression)
+- tests/test_problem1.py: 3 passed
+- tests/test_blackbox_task003.py: 85 passed
+- **Task-003 total: 95 passed, 0 failures**
+
+**No new issues found.** All previously identified issues remain resolved. Implementation meets plan specifications across all requirements.

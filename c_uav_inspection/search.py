@@ -274,6 +274,156 @@ def split_order_into_energy_feasible_routes(
     return tuple(routes)
 
 
+def split_order_into_energy_feasible_routes_no_split(
+    order: tuple[int, ...],
+    hover_times_s: Mapping[int, float],
+    data: ProblemData,
+) -> tuple[UAVRoute, ...]:
+    """Split a node visitation order into energy-feasible UAV sorties
+    WITHOUT splitting any target's hover demand across sorties.
+
+    Each positive-demand target must be fully served in exactly one sortie.
+    If a target cannot fit entirely within the remaining energy of the
+    current sortie, a new sortie is started to serve it.
+
+    Args:
+        order: Ordered list of target node IDs to visit.
+        hover_times_s: Total hover demand per node (must be fully served
+            within a single sortie).
+        data: Problem dataset.
+
+    Returns:
+        Tuple of UAVRoute instances (uav_id and sortie_id are placeholders 0, 1).
+
+    Raises:
+        InfeasibleError: If a target's full demand (roundtrip + hover)
+            cannot fit within the single-sortie energy budget.
+    """
+    # ---- input validation (shared with split variant) ---------------------
+    negative_nodes = [
+        (nid, val) for nid, val in hover_times_s.items() if val < 0.0
+    ]
+    if negative_nodes:
+        raise ValueError(
+            f"hover_times_s values must be non-negative. "
+            f"Negative values detected: {negative_nodes}"
+        )
+
+    known = _known_node_ids(data)
+    unknown_order = sorted(nid for nid in order if nid not in known)
+    unknown_hover = sorted(
+        nid for nid in hover_times_s if nid not in known
+    )
+    if unknown_order:
+        raise ValueError(
+            f"order contains node IDs that do not exist in the flight "
+            f"matrix: {unknown_order}"
+        )
+    if unknown_hover:
+        raise ValueError(
+            f"hover_times_s contains node IDs that do not exist in the "
+            f"flight matrix: {unknown_hover}"
+        )
+
+    order_set = set(order)
+    for node_id, val in hover_times_s.items():
+        if val <= EPSILON:
+            continue
+        if node_id not in order_set:
+            raise ValueError(
+                f"Node {node_id} has positive hover demand but is "
+                f"not present in the visitation order"
+            )
+
+    limit_j = data.params.effective_energy_limit_j
+    hover_power = data.params.hover_power_j_per_s
+    if hover_power <= 0.0:
+        raise ValueError(
+            f"hover_power_j_per_s must be positive, got {hover_power}"
+        )
+
+    # Pre-check: each individual target must be energy-feasible as a
+    # standalone sortie (depot -> target -> depot + full hover).
+    for node_id, demand_s in hover_times_s.items():
+        if demand_s <= EPSILON:
+            continue
+        roundtrip_j = (
+            data.flight_energy_j[(0, node_id)]
+            + data.flight_energy_j[(node_id, 0)]
+        )
+        hover_j = demand_s * hover_power
+        total_j = roundtrip_j + hover_j
+        if total_j > limit_j + EPSILON:
+            raise InfeasibleError(
+                f"Target {node_id} full hover demand ({demand_s:.2f} s) "
+                f"cannot fit within single-sortie energy budget "
+                f"({limit_j:.2f} J): roundtrip={roundtrip_j:.2f} J, "
+                f"hover={hover_j:.2f} J, total={total_j:.2f} J"
+            )
+
+    # ---- main bin-packing loop --------------------------------------------
+    routes: list[UAVRoute] = []
+    sortie_id = 0
+
+    remaining: dict[int, float] = {
+        nid: h for nid, h in hover_times_s.items() if h > EPSILON
+    }
+
+    while remaining:
+        sortie_id += 1
+        node_sequence: list[int] = [0]
+        route_hover: dict[int, float] = {}
+        current_node = 0
+        energy_used_j = 0.0
+
+        def close_route() -> None:
+            """Fly back to depot to finalize the current sortie."""
+            if node_sequence[-1] != 0:
+                node_sequence.append(0)
+
+        for node_id in order:
+            if node_id not in remaining:
+                continue
+
+            demand_s = remaining[node_id]
+
+            # Energy needed to visit and fully serve this target
+            arrival_energy = data.flight_energy_j[(current_node, node_id)]
+            return_energy = data.flight_energy_j[(node_id, 0)]
+            hover_energy = demand_s * hover_power
+
+            # Total energy if we add this target: arrive + hover + return
+            total_needed = arrival_energy + hover_energy + return_energy
+            residual = limit_j - energy_used_j
+
+            if total_needed > residual + EPSILON:
+                # Cannot fit this target in current sortie.
+                # Close the current sortie and start a new one.
+                close_route()
+                break
+
+            # Serve entire demand in this sortie
+            node_sequence.append(node_id)
+            route_hover[node_id] = demand_s
+            energy_used_j += arrival_energy + hover_energy
+            current_node = node_id
+            del remaining[node_id]
+
+        # If we exited the for-loop without breaking, close the route
+        if node_sequence[-1] != 0:
+            close_route()
+
+        route = UAVRoute(
+            uav_id=0,
+            sortie_id=sortie_id,
+            node_sequence=tuple(node_sequence),
+            hover_times_s=dict(route_hover),
+        )
+        routes.append(route)
+
+    return tuple(routes)
+
+
 def improve_route_by_two_opt(
     route: UAVRoute,
     data: ProblemData,

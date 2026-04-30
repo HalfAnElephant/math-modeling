@@ -14,11 +14,16 @@ def test_generate_all_figures_creates_png_files(tmp_path):
     generate_all_figures(DATA_PATH, tmp_path)
 
     assert (tmp_path / "problem1_k_comparison.png").exists()
+    assert (tmp_path / "problem2_baseline_comparison.png").exists()
+    assert (tmp_path / "problem2_k_comparison.png").exists()
     assert (tmp_path / "problem2_threshold_sensitivity.png").exists()
+    assert (tmp_path / "problem2_acceptance_tolerance_sensitivity.png").exists()
+    assert (tmp_path / "problem2_energy_parameter_sensitivity.png").exists()
+    assert (tmp_path / "problem2_split_hover_ablation.png").exists()
     assert (tmp_path / "recommended_routes.png").exists()
 
 
 def test_generate_all_figures_raises_when_no_input_csv(tmp_path):
     """CR-003: verify error raised when required CSV/JSON is missing."""
-    with pytest.raises(FileNotFoundError, match="problem1_k_comparison"):
+    with pytest.raises(FileNotFoundError, match="problem1_k_comparison_current_packed"):
         generate_all_figures(DATA_PATH, tmp_path)

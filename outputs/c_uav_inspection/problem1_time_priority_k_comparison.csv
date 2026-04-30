@@ -1,0 +1,5 @@
+k,solver_name,feasible,uav_phase_time_s,total_energy_j,load_std_s,route_count,normalized_objective
+1,time_priority_dp_k1,False,,,,,
+2,time_priority_dp_k2,True,491.5,205243.0,1.8499999999999943,2,1.0
+3,time_priority_dp_k3,True,346.3,214998.0,2.4513035081133596,3,0.347709
+4,time_priority_dp_k4,True,268.9,218614.0,3.813135192987521,4,0.0

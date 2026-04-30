@@ -1,0 +1,5 @@
+route_budget,feasible,uav_phase_time_s,total_energy_j,route_count,max_route_energy_j,notes
+1,False,,,,,no feasible partition with ≤1 routes
+2,True,491.5,205243.0,2,103292.0,
+3,True,346.3,214998.0,3,72084.0,
+4,True,268.9,218614.0,4,55372.0,

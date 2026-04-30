@@ -27,15 +27,20 @@ from c_uav_inspection.plots import generate_all_figures
 DATA_PATH: Path = Path("2026同济数学建模竞赛赛题/2026C数据.xlsx")
 REPORT_PATH: Path = Path("report/c_uav_inspection_results.md")
 
-PROBLEM1_K_CSV = "problem1_k_comparison.csv"
-PROBLEM1_SWAP_CSV = "problem1_swap_sensitivity.csv"
+PROBLEM1_K_CSV = "problem1_k_comparison_current_packed.csv"
+PROBLEM1_SWAP_CSV = "problem1_swap_sensitivity_k1.csv"
 PROBLEM2_K_CSV = "problem2_k_comparison.csv"
 PROBLEM2_THRESHOLD_CSV = "problem2_threshold_sensitivity.csv"
 RECOMMENDED_JSON = "recommended_solution.json"
 DATA_VALIDATION_JSON = "data_validation.json"
 
 PROBLEM1_K_PNG = "problem1_k_comparison.png"
+PROBLEM2_BASELINE_PNG = "problem2_baseline_comparison.png"
+PROBLEM2_K_PNG = "problem2_k_comparison.png"
 PROBLEM2_THRESHOLD_PNG = "problem2_threshold_sensitivity.png"
+PROBLEM2_ACCEPTANCE_TOLERANCE_PNG = "problem2_acceptance_tolerance_sensitivity.png"
+PROBLEM2_ENERGY_PARAMETER_PNG = "problem2_energy_parameter_sensitivity.png"
+PROBLEM2_SPLIT_HOVER_PNG = "problem2_split_hover_ablation.png"
 RECOMMENDED_ROUTES_PNG = "recommended_routes.png"
 
 ALL_OUTPUT_FILES: tuple[str, ...] = (
@@ -49,7 +54,12 @@ ALL_OUTPUT_FILES: tuple[str, ...] = (
 
 ALL_PNG_FILES: tuple[str, ...] = (
     PROBLEM1_K_PNG,
+    PROBLEM2_BASELINE_PNG,
+    PROBLEM2_K_PNG,
     PROBLEM2_THRESHOLD_PNG,
+    PROBLEM2_ACCEPTANCE_TOLERANCE_PNG,
+    PROBLEM2_ENERGY_PARAMETER_PNG,
+    PROBLEM2_SPLIT_HOVER_PNG,
     RECOMMENDED_ROUTES_PNG,
 )
 
@@ -556,7 +566,7 @@ def test_run_all_experiments_non_excel_file(tmp_path: Path) -> None:
 
 
 def test_generate_all_figures_creates_png_files(tmp_path: Path) -> None:
-    """All 3 PNG files exist after generate_all_figures."""
+    """All expected PNG files exist after generate_all_figures."""
     run_all_experiments(DATA_PATH, tmp_path)
     generate_all_figures(DATA_PATH, tmp_path)
 
@@ -741,8 +751,8 @@ def test_report_mentions_output_file_names() -> None:
 
     expected_files = [
         "data_validation.json",
-        "problem1_k_comparison.csv",
-        "problem1_swap_sensitivity.csv",
+        "problem1_k_comparison_current_packed.csv",
+        "problem1_swap_sensitivity_k1.csv",
         "problem2_k_comparison.csv",
         "problem2_threshold_sensitivity.csv",
         "recommended_solution.json",

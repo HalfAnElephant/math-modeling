@@ -1,0 +1,5 @@
+k,solver_name,uav_phase_time_s,total_energy_j,load_std_s,route_count,normalized_objective
+1,current_packed_split_hover,1288.3000000000002,206894.0,0.0,2,1.0
+2,current_packed_split_hover,639.3318181818182,206894.0,145.1818181818182,2,0.0
+3,current_packed_split_hover,639.3318181818182,206894.0,145.1818181818182,2,0.0
+4,current_packed_split_hover,639.3318181818182,206894.0,145.1818181818182,2,0.0
