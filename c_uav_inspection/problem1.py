@@ -20,6 +20,7 @@ from c_uav_inspection.model import (
 )
 from c_uav_inspection.search import (
     EPSILON,
+    InfeasibleError,
     improve_route_by_two_opt,
     nearest_neighbor_order,
     split_order_into_energy_feasible_routes,
@@ -59,11 +60,12 @@ def _assign_routes_to_uavs(
     if k <= 0:
         raise ValueError(f"k must be positive, got {k}")
 
-    # Sort routes by hover time descending (ties broken by order in input)
-    indexed_routes = list(enumerate(routes))
-    indexed_routes.sort(
-        key=lambda item: sum(item[1].hover_times_s.values()), reverse=True
-    )
+    # Sort routes by full route duration descending (LPT: longest processing time first)
+    route_metrics = [
+        (route, evaluate_uav_route(route, data).duration_s)
+        for route in routes
+    ]
+    route_metrics.sort(key=lambda item: item[1], reverse=True)
 
     # uav_work_times tracks accumulated work time per UAV
     uav_work_times: dict[int, float] = {uid: 0.0 for uid in range(1, k + 1)}
@@ -72,22 +74,19 @@ def _assign_routes_to_uavs(
 
     assigned: list[UAVRoute] = []
 
-    for _, route in indexed_routes:
+    for route, duration_s in route_metrics:
         # Find UAV with minimum work time (tie-break by smaller uav_id)
         best_uav = min(range(1, k + 1), key=lambda uid: uav_work_times[uid])
 
         uav_sortie_counts[best_uav] += 1
         sortie_id = uav_sortie_counts[best_uav]
 
-        # Compute route duration
-        metrics = evaluate_uav_route(route, data)
-        route_duration = metrics.duration_s
-
         # Add battery swap time if not first sortie for this UAV
+        additional = duration_s
         if sortie_id > 1:
-            uav_work_times[best_uav] += battery_swap_time_s
+            additional += battery_swap_time_s
 
-        uav_work_times[best_uav] += route_duration
+        uav_work_times[best_uav] += additional
 
         new_route = UAVRoute(
             uav_id=best_uav,
@@ -165,6 +164,13 @@ def solve_uav_hover_plan(
 
     # Summarize
     summary = summarize_uav_solution(assigned_routes, data, battery_swap_time_s)
+
+    # Enforce operating horizon
+    if summary.uav_phase_time_s > data.params.operating_horizon_s + 1e-9:
+        raise InfeasibleError(
+            f"UAV phase time {summary.uav_phase_time_s:.2f}s exceeds "
+            f"operating horizon {data.params.operating_horizon_s:.2f}s"
+        )
 
     return Problem1Solution(
         routes=assigned_routes,

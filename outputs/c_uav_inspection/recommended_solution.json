@@ -1,130 +1,28 @@
 {
-  "closed_loop_time_s": 3302.836363636364,
-  "uav_phase_time_s": 633.8363636363637,
-  "ground_review_time_s": 2669.0,
-  "manual_nodes": [
-    "MP02",
-    "MP03",
-    "MP05",
-    "MP08",
-    "MP09",
-    "MP11",
-    "MP13",
-    "MP14",
-    "MP15"
-  ],
-  "manual_target_nodes": [
-    2,
-    3,
-    5,
-    8,
-    9,
-    11,
-    13,
-    14,
-    15
-  ],
-  "weighted_manual_cost": 21,
-  "direct_confirmed_nodes": [
-    1,
-    4,
-    6,
-    7,
-    10,
-    12,
-    16
-  ],
-  "ground_path": [
-    "P0",
-    "MP13",
-    "MP14",
-    "MP15",
-    "MP02",
-    "MP03",
-    "MP05",
-    "MP08",
-    "MP09",
-    "MP11",
-    "P0"
-  ],
-  "routes": [
-    {
-      "uav_id": 1,
-      "sortie_id": 1,
-      "node_sequence": [
-        0,
-        13,
-        15,
-        16,
-        0
-      ],
-      "hover_times_s": {
-        "13": 6.063636363636363,
-        "15": 45.0,
-        "16": 514.6454545454545
-      }
-    },
-    {
-      "uav_id": 2,
-      "sortie_id": 1,
-      "node_sequence": [
-        0,
-        9,
-        10,
-        11,
-        12,
-        14,
-        13,
-        0
-      ],
-      "hover_times_s": {
-        "9": 55.0,
-        "10": 190.0,
-        "11": 35.0,
-        "12": 170.0,
-        "14": 50.0,
-        "13": 53.93636363636364
-      }
-    },
-    {
-      "uav_id": 3,
-      "sortie_id": 1,
-      "node_sequence": [
-        0,
-        16,
-        2,
-        3,
-        1,
-        4,
-        0
-      ],
-      "hover_times_s": {
-        "16": 45.35454545454547,
-        "2": 60.0,
-        "3": 35.0,
-        "1": 200.0,
-        "4": 204.13181818181818
-      }
-    },
-    {
-      "uav_id": 4,
-      "sortie_id": 1,
-      "node_sequence": [
-        0,
-        6,
-        4,
-        5,
-        8,
-        7,
-        0
-      ],
-      "hover_times_s": {
-        "4": 35.868181818181824,
-        "6": 180.0,
-        "5": 50.0,
-        "8": 60.0,
-        "7": 200.0
-      }
-    }
-  ]
+  "candidate_id": "all_direct_confirm",
+  "source": "all_direct_confirm",
+  "k": 4,
+  "direct_threshold_multiplier": 1.0,
+  "allow_split_hover": true,
+  "manual_reduction_time_tolerance": "",
+  "feasible": true,
+  "infeasible_reason": "",
+  "direct_confirmed_nodes": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16",
+  "manual_target_nodes": "",
+  "direct_confirm_count": 16,
+  "manual_count": 0,
+  "weighted_manual_cost": 0,
+  "uav_phase_time_s": 2480.413636363636,
+  "ground_review_time_s": 0.0,
+  "closed_loop_time_s": 2480.413636363636,
+  "total_energy_j": 1235527.0,
+  "load_std_s": 378.68499363718075,
+  "route_count": 10,
+  "max_route_energy_j": 135000.0,
+  "operating_horizon_s": 2600.0,
+  "within_operating_horizon": true,
+  "notes": "全部目标无人机直接确认，零人工复核",
+  "pareto_rank": 1,
+  "selection_rule": "closed_loop_under_2600_manual_under_2",
+  "recommendation_reason": "闭环时间≤2600s且人工点数≤2，按加权人工代价、总能耗、航次数排序"
 }

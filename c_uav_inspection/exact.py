@@ -302,29 +302,26 @@ def enumerate_direct_confirm_sets(
         rebuild_cl = rebuild.closed_loop
 
         rebuild_direct = tuple(rebuild_cl.direct_confirmed_nodes)
-        rebuild_eval = DirectSetEvaluation(
-            direct_nodes=rebuild_direct,
-            feasible=True,
-            closed_loop_time_s=rebuild_cl.closed_loop_time_s,
-            uav_phase_time_s=rebuild_cl.uav_phase_time_s,
-            ground_review_time_s=rebuild_cl.ground_review_time_s,
-            manual_count=rebuild_cl.manual_count,
-            weighted_manual_cost=rebuild_cl.weighted_manual_cost,
-            direct_confirm_count=len(rebuild_cl.direct_confirmed_nodes),
-            total_energy_j=rebuild_summary.total_energy_j,
-            load_std_s=rebuild_summary.load_std_s,
-            route_count=len(rebuild.routes),
-            normalized_objective=0.0,
-        )
-        # Normalize rebuild_eval within the same bounds
-        rebuild_eval_list = _with_normalized_objectives([rebuild_eval])
-        rebuild_eval = rebuild_eval_list[0]
+
+        # Look up the rebuild solution in the enumeration results to get
+        # the correctly normalized score (shared bounds, not single-element).
+        lookup = {
+            ev.direct_nodes: ev
+            for ev in evaluations
+            if ev.feasible
+        }
+        rebuild_eval = lookup.get(rebuild_direct)
+        if rebuild_eval is None:
+            raise RuntimeError(
+                f"Rebuild direct set {rebuild_direct} not found "
+                f"in enumeration results"
+            )
     except Exception:
         rebuild_eval = None
 
-    # Compute ranks and gaps
+    # Compute ranks and gaps — use exact direct_nodes matching
     if rebuild_eval is not None and by_time:
-        rebuild_time_rank = _find_rank_by_time(by_time, rebuild_eval)
+        rebuild_time_rank = _find_rank_by_direct_nodes(by_time, rebuild_eval.direct_nodes)
         best_time = by_time[0].closed_loop_time_s
         rebuild_time_gap_s = max(
             0.0, rebuild_eval.closed_loop_time_s - best_time
@@ -338,12 +335,11 @@ def enumerate_direct_confirm_sets(
         rebuild_time_gap_pct = inf
 
     if rebuild_eval is not None and by_obj:
-        rebuild_objective_rank = _find_rank_by_obj(by_obj, rebuild_eval)
+        rebuild_objective_rank = _find_rank_by_direct_nodes(by_obj, rebuild_eval.direct_nodes)
         best_obj = by_obj[0].normalized_objective
         rebuild_objective_gap = max(
             0.0, rebuild_eval.normalized_objective - best_obj
         )
-        rebuild_objective_rank = rebuild_objective_rank
     else:
         rebuild_objective_rank = total_subsets + 1
         rebuild_objective_gap = inf
@@ -364,29 +360,16 @@ def enumerate_direct_confirm_sets(
     )
 
 
-def _find_rank_by_time(
-    by_time: list[DirectSetEvaluation],
-    target: DirectSetEvaluation,
+def _find_rank_by_direct_nodes(
+    ranked: list[DirectSetEvaluation],
+    direct_nodes: tuple[int, ...],
 ) -> int:
-    """Find 1-based rank of target in the time-sorted list.
+    """Find 1-based rank of a candidate by exact direct_nodes match.
 
-    For ties in closed_loop_time_s, the first occurrence gets the lower rank.
+    Unlike threshold comparison, this avoids mismatching candidates
+    with similar but different direct-confirm sets.
     """
-    for idx, ev in enumerate(by_time):
-        if ev.closed_loop_time_s >= target.closed_loop_time_s - 1e-9:
-            return idx + 1
-    return len(by_time) + 1
-
-
-def _find_rank_by_obj(
-    by_obj: list[DirectSetEvaluation],
-    target: DirectSetEvaluation,
-) -> int:
-    """Find 1-based rank of target in the objective-sorted list.
-
-    For ties in normalized_objective, the first occurrence gets the lower rank.
-    """
-    for idx, ev in enumerate(by_obj):
-        if ev.normalized_objective >= target.normalized_objective - 1e-9:
-            return idx + 1
-    return len(by_obj) + 1
+    for idx, ev in enumerate(ranked, start=1):
+        if ev.direct_nodes == direct_nodes:
+            return idx
+    return len(ranked) + 1

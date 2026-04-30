@@ -104,9 +104,19 @@ def make_small_data() -> ProblemData:
                 dist / params.walking_speed_mps * params.walking_detour_factor
             )
 
+    from c_uav_inspection.data import ManualPoint
+
+    manual_points = {
+        "MP01": ManualPoint("MP01", 150.0, 0.0, 60.0, (1,)),
+        "MP02": ManualPoint("MP02", 250.0, 0.0, 60.0, (2,)),
+        "MP03": ManualPoint("MP03", 0.0, 150.0, 60.0, (3,)),
+        "MP04": ManualPoint("MP04", 0.0, 250.0, 60.0, (4,)),
+    }
+
     return ProblemData(
         params=params,
         targets=targets,
+        manual_points=manual_points,
         flight_time_s=flight_time_s,
         flight_energy_j=flight_energy_j,
         ground_time_s=ground_time_s,

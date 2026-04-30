@@ -2,7 +2,7 @@
 
 Instead of packing targets into a single nearest-neighbor order and then
 splitting it into energy-feasible sorties (the current "packed" approach),
-this module precomputes the best UAV route for every non-empty subset of
+this module precomputes a heuristic route candidate for every non-empty subset of
 targets and then uses dynamic programming to partition the targets into
 up to k routes such that the *maximum* route duration is minimized.
 
@@ -126,7 +126,7 @@ def precompute_problem1_subset_routes(
     data: ProblemData,
     improve: bool = True,
 ) -> dict[int, SubsetRouteCandidate]:
-    """Precompute the best single-sortie route for every non-empty target subset.
+    """Precompute heuristic route candidates for every non-empty target subset.
 
     Enumerates all 2^n - 1 non-empty subsets of the n targets. For each subset:
       1. Build a nearest-neighbor visitation order.

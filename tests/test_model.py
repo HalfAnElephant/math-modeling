@@ -52,3 +52,32 @@ def test_summarize_solution_includes_swap_time_between_sorties():
     assert summary.uav_work_times_s[1] == uav1_route_time + 300
     assert summary.uav_work_times_s[2] == uav2_route_time
     assert summary.uav_phase_time_s == max(summary.uav_work_times_s.values())
+
+
+def test_summary_counts_idle_uavs_when_k_is_given():
+    """When k is given, idle UAVs must be included with work time 0.0."""
+    data = load_problem_data(DATA_PATH)
+    route = UAVRoute(
+        uav_id=1,
+        sortie_id=1,
+        node_sequence=(0, 1, 0),
+        hover_times_s={1: data.targets[0].base_hover_time_s},
+    )
+    summary = summarize_uav_solution([route], data, 300.0, k=4)
+    assert set(summary.uav_work_times_s) == {1, 2, 3, 4}
+    assert summary.uav_work_times_s[2] == 0.0
+    assert summary.load_std_s > 0.0
+
+
+def test_completion_times_reach_base_hover():
+    """Target completion times must include all targets with positive values."""
+    from c_uav_inspection.model import compute_target_completion_times
+    from c_uav_inspection.problem1 import solve_problem1_for_k
+
+    data = load_problem_data(DATA_PATH)
+    sol = solve_problem1_for_k(data, 4, data.params.battery_swap_time_s, improve=True)
+    completion = compute_target_completion_times(
+        sol.routes, data, data.params.battery_swap_time_s,
+    )
+    assert set(completion) == {t.node_id for t in data.targets}
+    assert all(v > 0.0 for v in completion.values())

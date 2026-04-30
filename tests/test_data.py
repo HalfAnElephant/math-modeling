@@ -332,3 +332,35 @@ def test_read_matrix_sheet_breaks_on_fully_empty_row():
     assert len(result) == len(col_ids)
     assert all(key[0] == 0 for key in result)
     assert (0, 0) in result
+
+
+# ── ManualPoints authority tests ───────────────────────────────────────
+
+
+def test_manual_points_are_authoritative_for_service_time():
+    """ManualPoints service time is authoritative over NodeData.manual_service_time_s.
+
+    The validate_problem_data output must list conflicts where NodeData and
+    ManualPoints disagree, and the ManualPoints sum must be >= NodeData sum.
+    """
+    data = load_problem_data(DATA_PATH)
+    validation = validate_problem_data(data)
+
+    conflicts = validation["manual_service_time_conflicts"]
+    assert conflicts, "Expected service time conflicts between NodeData and ManualPoints"
+    assert any(c["manual_point_id"] == "MP02" for c in conflicts)
+    assert validation["manual_service_sum_from_manual_points_s"] >= (
+        validation["manual_service_sum_from_node_data_s"]
+    )
+
+
+def test_all_matrices_are_complete():
+    """All three matrices must be complete with non-negative values."""
+    data = load_problem_data(DATA_PATH)
+    validation = validate_problem_data(data)
+
+    assert validation["flight_time_matrix_complete"] is True
+    assert validation["flight_energy_matrix_complete"] is True
+    assert validation["ground_time_matrix_complete"] is True
+    assert validation["matrix_values_nonnegative"] is True
+    assert validation["matrix_diagonal_zero"] is True

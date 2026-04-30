@@ -18,6 +18,18 @@ from c_uav_inspection.model import (
 from c_uav_inspection.problem1 import solve_uav_hover_plan
 from c_uav_inspection.search import InfeasibleError
 
+# Re-export for external use
+__all__ = [
+    "ClosedLoopResult",
+    "GroundReviewResult",
+    "JointSolution",
+    "effective_direct_threshold",
+    "evaluate_closed_loop",
+    "solve_all_direct_confirm_baseline",
+    "solve_ground_tsp",
+    "solve_joint_problem_for_k",
+]
+
 
 @dataclass(frozen=True)
 class GroundReviewResult:
@@ -225,11 +237,17 @@ def solve_ground_tsp(
         )
 
     # Build mapping from manual_point_id to service time
-    service_by_point: dict[str, float] = {}
-    for target in data.targets:
-        mp = target.manual_point_id
-        if mp not in service_by_point:
-            service_by_point[mp] = target.manual_service_time_s
+    # Authoritative source: ManualPoints sheet (not NodeData.manual_service_time_s)
+    service_by_point = {
+        pid: mp.manual_service_time_s
+        for pid, mp in data.manual_points.items()
+    }
+
+    missing = [pid for pid in distinct_points if pid not in service_by_point]
+    if missing:
+        raise ValueError(
+            f"Manual service time missing for points: {missing}"
+        )
 
     travel_path, travel_time = _held_karp_tsp(
         distinct_points, data.ground_time_s
@@ -378,11 +396,12 @@ def _direct_confirm_score(
     )
 
     # 2. Ground time savings if we avoid manual review
+    # Use authoritative ManualPoints service time and explicit KeyError on missing edges
     mp = target.manual_point_id
     ground_savings = (
-        data.ground_time_s.get(("P0", mp), 0.0)
-        + data.ground_time_s.get((mp, "P0"), 0.0)
-        + target.manual_service_time_s
+        data.ground_time_s[("P0", mp)]
+        + data.ground_time_s[(mp, "P0")]
+        + data.manual_points[mp].manual_service_time_s
     )
 
     # 3. Energy penalty: how much of a single sortie is consumed by reaching
@@ -595,3 +614,27 @@ def solve_joint_problem_for_k(
             current_direct_set = set(current.closed_loop.direct_confirmed_nodes)
 
     return current
+
+
+def solve_all_direct_confirm_baseline(
+    data: ProblemData,
+    k: int,
+    direct_threshold_multiplier: float = 1.0,
+    allow_split_hover: bool = True,
+) -> JointSolution:
+    """Construct the all-direct-confirm baseline solution.
+
+    All 16 targets are set as direct-confirmed; zero ground review.
+    If the solution is infeasible (energy or operating horizon), raises
+    InfeasibleError.
+    """
+    direct_nodes = tuple(t.node_id for t in data.targets)
+    solution = _rebuild_for_direct_set(
+        data, k, direct_nodes, direct_threshold_multiplier,
+        allow_split_hover=allow_split_hover,
+    )
+    if solution is None:
+        raise InfeasibleError(
+            "All-direct-confirm baseline is infeasible with current data"
+        )
+    return solution

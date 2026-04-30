@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Mapping
 
-from c_uav_inspection.data import ProblemData
+from c_uav_inspection.data import ManualPoint, ProblemData
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,7 @@ def summarize_uav_solution(
     routes: tuple[UAVRoute, ...] | list[UAVRoute],
     data: ProblemData,
     battery_swap_time_s: float,
+    k: int | None = None,
 ) -> UAVSolutionSummary:
     """Summarize a complete multi-UAV solution.
 
@@ -105,6 +106,9 @@ def summarize_uav_solution(
       - Work time = sum of route durations + (number_of_sorties - 1) * battery_swap_time_s.
     UAV phase time is the maximum work time across all UAVs.
     Load standard deviation uses population std on UAV work times.
+
+    When *k* is given, idle UAVs (those with no routes) are included with
+    work time 0.0, so load_std_s and uav_work_times_s reflect the full fleet.
     """
     # Group routes by uav_id
     uav_routes: dict[int, list[UAVRoute]] = {}
@@ -121,7 +125,6 @@ def summarize_uav_solution(
         ]
         total_duration = sum(route_durations)
         sortie_count = len(uav_route_list)
-        # Battery swap time applies between sorties: (n-1) swaps for n sorties
         swap_overhead = (sortie_count - 1) * battery_swap_time_s
         uav_work_times_s[uav_id] = total_duration + swap_overhead
 
@@ -130,6 +133,12 @@ def summarize_uav_solution(
             total_energy += m.energy_j
             if not m.feasible_energy:
                 all_feasible = False
+
+    # If k is specified, fill in idle UAVs with 0.0 work time
+    if k is not None:
+        for uid in range(1, k + 1):
+            if uid not in uav_work_times_s:
+                uav_work_times_s[uid] = 0.0
 
     # UAV phase time is the maximum work time
     uav_phase_time_s = max(uav_work_times_s.values()) if uav_work_times_s else 0.0
@@ -151,3 +160,81 @@ def summarize_uav_solution(
         load_std_s=load_std_s,
         feasible_energy=all_feasible,
     )
+
+
+def compute_target_completion_times(
+    routes: tuple[UAVRoute, ...] | list[UAVRoute],
+    data: ProblemData,
+    battery_swap_time_s: float,
+) -> dict[int, float]:
+    """Compute the wall-clock completion time for each target.
+
+    For each UAV:
+      1. Sort sorties by sortie_id.
+      2. Add battery swap time between consecutive sorties.
+      3. Accumulate flight time along node_sequence.
+      4. When visiting a target, record the earliest cumulative time at
+         which the target reaches its base_hover_time_s.
+
+    Raises ValueError if any target does not reach its base hover requirement.
+    """
+    # Group routes by uav_id
+    uav_routes: dict[int, list[UAVRoute]] = {}
+    for route in routes:
+        uav_routes.setdefault(route.uav_id, []).append(route)
+
+    # Track cumulative hover per target
+    hover_accum: dict[int, float] = {}
+    completion: dict[int, float] = {}
+
+    base_requirements = {t.node_id: t.base_hover_time_s for t in data.targets}
+
+    for uav_id in sorted(uav_routes):
+        sorties = sorted(uav_routes[uav_id], key=lambda r: r.sortie_id)
+        clock = 0.0
+        for idx, route in enumerate(sorties):
+            if idx > 0:
+                clock += battery_swap_time_s
+
+            # Walk the route node by node
+            seq = route.node_sequence
+            for i in range(len(seq) - 1):
+                src = seq[i]
+                dst = seq[i + 1]
+                clock += data.flight_time_s[(src, dst)]
+
+                if dst != 0:
+                    hover_s = route.hover_times_s.get(dst, 0.0)
+                    prev = hover_accum.get(dst, 0.0)
+                    hover_accum[dst] = prev + hover_s
+
+                    threshold = base_requirements.get(dst, 0.0)
+                    if (
+                        dst not in completion
+                        and hover_accum[dst] >= threshold - 1e-9
+                    ):
+                        completion[dst] = clock
+
+    for nid, required in base_requirements.items():
+        if hover_accum.get(nid, 0.0) < required - 1e-9:
+            raise ValueError(
+                f"Target {nid}: accumulated hover "
+                f"{hover_accum.get(nid, 0.0):.6f}s < required {required}s"
+            )
+
+    return completion
+
+
+def weighted_priority_completion_time(
+    completion_times: Mapping[int, float],
+    data: ProblemData,
+) -> float:
+    """Compute the weighted sum of target completion times.
+
+    Each target's completion time is weighted by its priority_weight.
+    """
+    weight_by_node = {t.node_id: t.priority_weight for t in data.targets}
+    total = 0.0
+    for nid, ct in completion_times.items():
+        total += weight_by_node.get(nid, 0) * ct
+    return total

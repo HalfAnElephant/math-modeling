@@ -8,6 +8,7 @@ from c_uav_inspection.problem2 import (
     _direct_confirm_score,
     effective_direct_threshold,
     evaluate_closed_loop,
+    solve_all_direct_confirm_baseline,
     solve_ground_tsp,
 )
 
@@ -175,3 +176,27 @@ def test_direct_confirm_score_multiplies_priority_weight():
     # All base_rates must be positive (verified per-target above)
     # and the set of base_rates must be non-empty
     assert len(base_rates) == len(data.targets)
+
+
+def test_ground_tsp_uses_manual_points_service_time():
+    """solve_ground_tsp must use ManualPoints service time, not NodeData."""
+    data = load_problem_data(DATA_PATH)
+    result = solve_ground_tsp(data, ("MP02",))
+    assert result.service_time_s == data.manual_points["MP02"].manual_service_time_s
+
+    # MP02 has conflicting service times (180 vs 210), verify we use ManualPoints
+    mp02_target = next(t for t in data.targets if t.manual_point_id == "MP02")
+    assert mp02_target.manual_service_time_s == 180.0
+    assert data.manual_points["MP02"].manual_service_time_s == 210.0
+    assert result.service_time_s == 210.0, (
+        "Must use ManualPoints service time (210), not NodeData (180)"
+    )
+
+
+def test_all_direct_confirm_baseline_is_represented():
+    """All-direct-confirm baseline must be constructible and have 0 manual."""
+    data = load_problem_data(DATA_PATH)
+    sol = solve_all_direct_confirm_baseline(data, data.params.k_max)
+    assert len(sol.closed_loop.direct_confirmed_nodes) == len(data.targets)
+    assert sol.closed_loop.manual_count == 0
+    assert sol.closed_loop.ground_review_time_s == 0.0

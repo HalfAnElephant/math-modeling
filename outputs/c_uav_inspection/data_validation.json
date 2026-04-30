@@ -3,5 +3,46 @@
   "base_hover_sum_s": 790.0,
   "direct_hover_sum_s": 5210.0,
   "confirm_thresholds_valid": true,
-  "max_single_direct_confirm_energy_j": 132986.0
+  "max_single_direct_confirm_energy_j": 132986.0,
+  "manual_point_count": 16,
+  "manual_service_sum_from_manual_points_s": 2940.0,
+  "manual_service_sum_from_node_data_s": 2670.0,
+  "manual_service_time_conflicts": [
+    {
+      "manual_point_id": "MP02",
+      "node_data_service_time_s": 180.0,
+      "manual_points_service_time_s": 210.0
+    },
+    {
+      "manual_point_id": "MP08",
+      "node_data_service_time_s": 180.0,
+      "manual_points_service_time_s": 240.0
+    },
+    {
+      "manual_point_id": "MP09",
+      "node_data_service_time_s": 180.0,
+      "manual_points_service_time_s": 240.0
+    },
+    {
+      "manual_point_id": "MP13",
+      "node_data_service_time_s": 180.0,
+      "manual_points_service_time_s": 240.0
+    },
+    {
+      "manual_point_id": "MP16",
+      "node_data_service_time_s": 180.0,
+      "manual_points_service_time_s": 240.0
+    }
+  ],
+  "flight_time_matrix_complete": true,
+  "flight_energy_matrix_complete": true,
+  "ground_time_matrix_complete": true,
+  "matrix_diagonal_zero": true,
+  "matrix_values_nonnegative": true,
+  "priority_weight_values": [
+    1,
+    2,
+    3
+  ],
+  "checks_sheet_consistency": true
 }

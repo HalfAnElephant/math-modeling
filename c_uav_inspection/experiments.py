@@ -16,6 +16,8 @@ from c_uav_inspection.data import ProblemData, load_problem_data, validate_probl
 from c_uav_inspection.model import UAVRoute, evaluate_uav_route, summarize_uav_solution
 from c_uav_inspection.objective import (
     bounds_from_candidates,
+    pareto_front,
+    score_with_fixed_bounds,
     weighted_normalized_objective,
 )
 from c_uav_inspection.problem1 import solve_problem1_for_k
@@ -23,7 +25,11 @@ from c_uav_inspection.problem1_time import (
     precompute_problem1_subset_routes,
     solve_problem1_time_priority_for_k,
 )
-from c_uav_inspection.problem2 import solve_ground_tsp, solve_joint_problem_for_k
+from c_uav_inspection.problem2 import (
+    solve_all_direct_confirm_baseline,
+    solve_ground_tsp,
+    solve_joint_problem_for_k,
+)
 from c_uav_inspection.exact import (
     DirectSetEvaluation,
     enumerate_direct_confirm_sets,
@@ -492,6 +498,9 @@ def _run_problem2_energy_limit_sensitivity(
                 "manual_count": sol.closed_loop.manual_count,
                 "weighted_manual_cost": sol.closed_loop.weighted_manual_cost,
                 "direct_confirm_count": len(sol.closed_loop.direct_confirmed_nodes),
+                "direct_confirmed_nodes": _node_tuple_to_string(sol.closed_loop.direct_confirmed_nodes),
+                "manual_target_nodes": _node_tuple_to_string(sol.closed_loop.manual_target_nodes),
+                "manual_nodes": _node_tuple_to_string(sol.closed_loop.manual_nodes),
                 "total_energy_j": summary.total_energy_j,
                 "load_std_s": summary.load_std_s,
             })
@@ -547,6 +556,9 @@ def _run_problem2_hover_power_sensitivity(
                 "manual_count": sol.closed_loop.manual_count,
                 "weighted_manual_cost": sol.closed_loop.weighted_manual_cost,
                 "direct_confirm_count": len(sol.closed_loop.direct_confirmed_nodes),
+                "direct_confirmed_nodes": _node_tuple_to_string(sol.closed_loop.direct_confirmed_nodes),
+                "manual_target_nodes": _node_tuple_to_string(sol.closed_loop.manual_target_nodes),
+                "manual_nodes": _node_tuple_to_string(sol.closed_loop.manual_nodes),
                 "total_energy_j": summary.total_energy_j,
                 "load_std_s": summary.load_std_s,
             })
@@ -722,6 +734,299 @@ def _run_problem2_exact_enumeration(
     _write_csv(output_dir / "problem2_exact_top.csv", top_rows)
 
 
+def _run_problem2_candidate_pool(data: ProblemData, output_dir: Path) -> list[dict[str, Any]]:
+    """Generate unified candidate pool for Problem 2.
+
+    Includes: base_only, all_direct_confirm, rebuild variants, split/no-split,
+    and acceptance tolerance candidates.
+
+    Returns the list of candidate dicts for downstream Pareto/recommendation.
+    """
+    k = data.params.k_max
+    sw = data.params.battery_swap_time_s
+    multiplier = 1.0
+    candidates: list[dict[str, Any]] = []
+
+    # 1. base_only: all targets base hover, all manual review
+    try:
+        p1 = solve_problem1_for_k(data, k, sw, improve=True)
+        from c_uav_inspection.problem2 import evaluate_closed_loop as ecl
+        closed = ecl(data, p1.routes, multiplier)
+        summary = summarize_uav_solution(p1.routes, data, sw)
+        candidates.append({
+            "candidate_id": "base_only",
+            "source": "base_only",
+            "k": k,
+            "direct_threshold_multiplier": multiplier,
+            "allow_split_hover": True,
+            "manual_reduction_time_tolerance": "",
+            "feasible": True,
+            "infeasible_reason": "",
+            "direct_confirmed_nodes": "",
+            "manual_target_nodes": _node_tuple_to_string(closed.manual_target_nodes),
+            "direct_confirm_count": len(closed.direct_confirmed_nodes),
+            "manual_count": closed.manual_count,
+            "weighted_manual_cost": closed.weighted_manual_cost,
+            "uav_phase_time_s": closed.uav_phase_time_s,
+            "ground_review_time_s": closed.ground_review_time_s,
+            "closed_loop_time_s": closed.closed_loop_time_s,
+            "total_energy_j": summary.total_energy_j,
+            "load_std_s": summary.load_std_s,
+            "route_count": len(p1.routes),
+            "max_route_energy_j": max(evaluate_uav_route(r, data).energy_j for r in p1.routes),
+            "operating_horizon_s": data.params.operating_horizon_s,
+            "within_operating_horizon": closed.uav_phase_time_s <= data.params.operating_horizon_s + 1e-9,
+            "notes": "所有目标仅基础巡检，全部人工复核",
+        })
+    except InfeasibleError:
+        candidates.append({"candidate_id": "base_only", "source": "base_only",
+                           "feasible": False, "infeasible_reason": "base_only infeasible"})
+
+    # 2. all_direct_confirm: all 16 targets direct confirmed
+    try:
+        adc = solve_all_direct_confirm_baseline(data, k, multiplier)
+        adc_summary = summarize_uav_solution(adc.routes, data, sw)
+        candidates.append({
+            "candidate_id": "all_direct_confirm",
+            "source": "all_direct_confirm",
+            "k": k,
+            "direct_threshold_multiplier": multiplier,
+            "allow_split_hover": True,
+            "manual_reduction_time_tolerance": "",
+            "feasible": True,
+            "infeasible_reason": "",
+            "direct_confirmed_nodes": _node_tuple_to_string(adc.closed_loop.direct_confirmed_nodes),
+            "manual_target_nodes": "",
+            "direct_confirm_count": len(adc.closed_loop.direct_confirmed_nodes),
+            "manual_count": adc.closed_loop.manual_count,
+            "weighted_manual_cost": adc.closed_loop.weighted_manual_cost,
+            "uav_phase_time_s": adc.closed_loop.uav_phase_time_s,
+            "ground_review_time_s": adc.closed_loop.ground_review_time_s,
+            "closed_loop_time_s": adc.closed_loop.closed_loop_time_s,
+            "total_energy_j": adc_summary.total_energy_j,
+            "load_std_s": adc_summary.load_std_s,
+            "route_count": len(adc.routes),
+            "max_route_energy_j": max(evaluate_uav_route(r, data).energy_j for r in adc.routes),
+            "operating_horizon_s": data.params.operating_horizon_s,
+            "within_operating_horizon": adc.closed_loop.uav_phase_time_s <= data.params.operating_horizon_s + 1e-9,
+            "notes": "全部目标无人机直接确认，零人工复核",
+        })
+    except InfeasibleError:
+        candidates.append({"candidate_id": "all_direct_confirm", "source": "all_direct_confirm",
+                           "feasible": False, "infeasible_reason": "all_direct_confirm infeasible"})
+
+    # 3. rebuild candidates with different tolerances
+    for tol, label in ((1.00, "rebuild_tolerance_1.00"), (1.03, "rebuild_default"),
+                        (1.05, "rebuild_tolerance_1.05"), (1.10, "rebuild_tolerance_1.10")):
+        try:
+            joint = solve_joint_problem_for_k(
+                data, k, multiplier,
+                manual_reduction_time_tolerance=tol,
+            )
+            jsum = summarize_uav_solution(joint.routes, data, sw)
+            candidates.append({
+                "candidate_id": label,
+                "source": label,
+                "k": k,
+                "direct_threshold_multiplier": multiplier,
+                "allow_split_hover": True,
+                "manual_reduction_time_tolerance": tol,
+                "feasible": True,
+                "infeasible_reason": "",
+                "direct_confirmed_nodes": _node_tuple_to_string(joint.closed_loop.direct_confirmed_nodes),
+                "manual_target_nodes": _node_tuple_to_string(joint.closed_loop.manual_target_nodes),
+                "direct_confirm_count": len(joint.closed_loop.direct_confirmed_nodes),
+                "manual_count": joint.closed_loop.manual_count,
+                "weighted_manual_cost": joint.closed_loop.weighted_manual_cost,
+                "uav_phase_time_s": joint.closed_loop.uav_phase_time_s,
+                "ground_review_time_s": joint.closed_loop.ground_review_time_s,
+                "closed_loop_time_s": joint.closed_loop.closed_loop_time_s,
+                "total_energy_j": jsum.total_energy_j,
+                "load_std_s": jsum.load_std_s,
+                "route_count": len(joint.routes),
+                "max_route_energy_j": max(evaluate_uav_route(r, data).energy_j for r in joint.routes),
+                "operating_horizon_s": data.params.operating_horizon_s,
+                "within_operating_horizon": joint.closed_loop.uav_phase_time_s <= data.params.operating_horizon_s + 1e-9,
+                "notes": "",
+            })
+        except (InfeasibleError, RuntimeError):
+            candidates.append({"candidate_id": label, "source": label,
+                               "feasible": False, "infeasible_reason": f"{label} infeasible"})
+
+    # 4. split_hover variants
+    for allow_split, label in ((True, "split_hover_true"), (False, "split_hover_false")):
+        try:
+            joint = solve_joint_problem_for_k(
+                data, k, multiplier, allow_split_hover=allow_split,
+            )
+            jsum = summarize_uav_solution(joint.routes, data, sw)
+            candidates.append({
+                "candidate_id": label,
+                "source": label,
+                "k": k,
+                "direct_threshold_multiplier": multiplier,
+                "allow_split_hover": allow_split,
+                "manual_reduction_time_tolerance": 1.03,
+                "feasible": True,
+                "infeasible_reason": "",
+                "direct_confirmed_nodes": _node_tuple_to_string(joint.closed_loop.direct_confirmed_nodes),
+                "manual_target_nodes": _node_tuple_to_string(joint.closed_loop.manual_target_nodes),
+                "direct_confirm_count": len(joint.closed_loop.direct_confirmed_nodes),
+                "manual_count": joint.closed_loop.manual_count,
+                "weighted_manual_cost": joint.closed_loop.weighted_manual_cost,
+                "uav_phase_time_s": joint.closed_loop.uav_phase_time_s,
+                "ground_review_time_s": joint.closed_loop.ground_review_time_s,
+                "closed_loop_time_s": joint.closed_loop.closed_loop_time_s,
+                "total_energy_j": jsum.total_energy_j,
+                "load_std_s": jsum.load_std_s,
+                "route_count": len(joint.routes),
+                "max_route_energy_j": max(evaluate_uav_route(r, data).energy_j for r in joint.routes),
+                "operating_horizon_s": data.params.operating_horizon_s,
+                "within_operating_horizon": joint.closed_loop.uav_phase_time_s <= data.params.operating_horizon_s + 1e-9,
+                "notes": "",
+            })
+        except (InfeasibleError, RuntimeError):
+            candidates.append({"candidate_id": label, "source": label,
+                               "feasible": False, "infeasible_reason": f"{label} infeasible"})
+
+    _write_csv(output_dir / "problem2_candidate_pool.csv", candidates)
+    return candidates
+
+
+_PARETO_MINIMIZE_TERMS = (
+    "closed_loop_time_s", "manual_count", "weighted_manual_cost",
+    "total_energy_j", "route_count", "load_std_s",
+)
+
+_RECOMMENDATION_WEIGHTS: dict[str, float] = {
+    "closed_loop_time_s": 0.40,
+    "weighted_manual_cost": 0.20,
+    "manual_count": 0.15,
+    "total_energy_j": 0.10,
+    "route_count": 0.10,
+    "load_std_s": 0.05,
+}
+
+
+def choose_recommended_problem2_candidate(
+    pareto_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Select the recommended Problem 2 candidate from the Pareto front.
+
+    Rules (in priority order):
+    1. Must be on Pareto front (caller ensures this)
+    2. Prefer candidates with closed_loop_time_s <= 2600 and manual_count <= 2
+    3. Otherwise score all by fixed weights and pick the best
+    """
+    # Prefer low closed-loop time with few manual points
+    preferred = [
+        r for r in pareto_rows
+        if r.get("closed_loop_time_s", float("inf")) <= 2600
+        and r.get("manual_count", float("inf")) <= 2
+    ]
+    if preferred:
+        preferred.sort(key=lambda r: (
+            r.get("weighted_manual_cost", 0),
+            r.get("total_energy_j", 0),
+            r.get("route_count", 0),
+        ))
+        result = dict(preferred[0])
+        result["selection_rule"] = "closed_loop_under_2600_manual_under_2"
+        result["recommendation_reason"] = (
+            "闭环时间≤2600s且人工点数≤2，按加权人工代价、总能耗、航次数排序"
+        )
+        return result
+
+    # Fallback: fixed-weight scoring
+    bounds = bounds_from_candidates(pareto_rows, list(_RECOMMENDATION_WEIGHTS.keys()))
+    for row in pareto_rows:
+        row["recommendation_score"] = score_with_fixed_bounds(
+            row, bounds, _RECOMMENDATION_WEIGHTS,
+        )
+    pareto_rows.sort(key=lambda r: r["recommendation_score"])
+    result = dict(pareto_rows[0])
+    result["selection_rule"] = "pareto_weighted_score"
+    result["recommendation_reason"] = (
+        "位于帕累托前沿，并在固定权重评分下排名第一"
+    )
+    return result
+
+
+def _run_problem2_pareto_front(
+    data: ProblemData, output_dir: Path, candidates: list[dict[str, Any]],
+) -> None:
+    """Generate Pareto front from candidate pool and write recommendation."""
+    feasible = [
+        r for r in candidates
+        if r.get("feasible") is True
+        and r.get("within_operating_horizon") is True
+    ]
+    if not feasible:
+        _write_json(output_dir / "recommended_solution.json", {
+            "error": "No feasible candidates in pool",
+            "selection_rule": "none",
+            "recommendation_reason": "无可行候选",
+        })
+        return
+
+    front = pareto_front(feasible, _PARETO_MINIMIZE_TERMS)
+
+    # Add pareto metadata
+    for row in front:
+        row["pareto_rank"] = 1
+    _write_csv(output_dir / "problem2_pareto_front.csv", front)
+
+    # Choose recommended
+    recommended = choose_recommended_problem2_candidate(front)
+    _write_json(output_dir / "recommended_solution.json", recommended)
+
+
+def _write_output_manifest(output_dir: Path, include_expensive: bool) -> None:
+    """Write MANIFEST.md listing all generated output files."""
+    from datetime import datetime
+
+    manifest_files = [
+        ("data_validation.json", "run_all_experiments", "yes", "数据校验"),
+        ("problem1_packed_k_comparison.csv", "run_all_experiments", "yes", "问题1装箱K对比"),
+        ("problem1_time_priority_k_comparison.csv", "run_all_experiments", "yes", "问题1时间优先K对比"),
+        ("problem1_parallel_route_count_ablation.csv", "run_all_experiments", "yes", "问题1航次预算消融"),
+        ("problem1_swap_sensitivity_k1.csv", "run_all_experiments", "yes", "问题1换电敏感 K=1"),
+        ("problem1_swap_sensitivity_k4_reference.csv", "run_all_experiments", "yes", "问题1换电敏感 K=4"),
+        ("problem2_baseline_comparison.csv", "run_all_experiments", "yes", "问题2基准对比"),
+        ("problem2_candidate_pool.csv", "run_all_experiments", "yes", "问题2候选池"),
+        ("problem2_pareto_front.csv", "run_all_experiments", "yes", "问题2帕累托前沿"),
+        ("problem2_k_comparison.csv", "run_all_experiments", "yes", "问题2 K对比"),
+        ("problem2_threshold_sensitivity.csv", "run_all_experiments", "yes", "问题2阈值敏感性"),
+        ("problem2_split_hover_ablation.csv", "run_all_experiments", "yes", "问题2可拆分消融"),
+        ("problem2_acceptance_tolerance_sensitivity.csv", "run_all_experiments", "yes", "问题2接受准则敏感性（搜索行为，非推荐依据）"),
+        ("problem2_energy_limit_sensitivity.csv", "run_all_experiments", "yes", "问题2能量限制敏感性"),
+        ("problem2_hover_power_sensitivity.csv", "run_all_experiments", "yes", "问题2悬停功率敏感性"),
+        ("recommended_solution.json", "run_all_experiments", "yes", "推荐方案"),
+    ]
+
+    if include_expensive:
+        manifest_files.extend([
+            ("problem2_exact_summary.json", "run_all_experiments", "yes", "全枚举摘要"),
+            ("problem2_exact_top.csv", "run_all_experiments", "yes", "全枚举Top结果"),
+        ])
+
+    lines = [
+        "# outputs/c_uav_inspection Manifest",
+        "",
+        f"Generated at: {datetime.now().isoformat()}",
+        "Data source: 2026同济数学建模竞赛赛题/2026C数据.xlsx",
+        f"include_expensive: {include_expensive}",
+        "",
+        "| File | Generated by | Used in paper | Notes |",
+        "|---|---:|---|---|",
+    ]
+    for fname, gen_by, used, notes in manifest_files:
+        exists = "yes" if (output_dir / fname).exists() else "no"
+        lines.append(f"| {fname} | {gen_by} | {used} | {notes} (present: {exists}) |")
+
+    (output_dir / "MANIFEST.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def _write_recommended_solution(data: ProblemData, output_dir: Path) -> None:
     """Solve Problem 2 at K_max, multiplier=1.0 and serialise the result."""
     sol = solve_joint_problem_for_k(data, data.params.k_max, 1.0)
@@ -790,6 +1095,8 @@ def run_all_experiments(
 
     # Problem 2
     _run_problem2_baseline_comparison(data, output_dir)
+    candidates = _run_problem2_candidate_pool(data, output_dir)
+    _run_problem2_pareto_front(data, output_dir, candidates)
     _run_problem2_k_comparison(data, output_dir)
     _run_problem2_threshold_sensitivity(data, output_dir)
     _run_problem2_split_hover_ablation(data, output_dir)
@@ -801,5 +1108,5 @@ def run_all_experiments(
     if include_expensive:
         _run_problem2_exact_enumeration(data, output_dir)
 
-    # Recommended solution
-    _write_recommended_solution(data, output_dir)
+    # Output manifest
+    _write_output_manifest(output_dir, include_expensive)

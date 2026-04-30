@@ -51,11 +51,28 @@ class Target:
 
 
 @dataclass(frozen=True)
+class ManualPoint:
+    """A manual review point read from the ManualPoints sheet.
+
+    This is the authoritative source for manual service time.
+    When NodeData.manual_service_time_s conflicts with this sheet,
+    ManualPoints takes precedence for ground-review time calculations.
+    """
+
+    manual_point_id: str
+    x_m: float
+    y_m: float
+    manual_service_time_s: float
+    mapped_node_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class ProblemData:
     """Complete problem data loaded from the Excel workbook."""
 
     params: UAVParams
     targets: list[Target]
+    manual_points: dict[str, ManualPoint]
     flight_time_s: dict[tuple[int, int], float]
     flight_energy_j: dict[tuple[int, int], float]
     ground_time_s: dict[tuple[str, str], float]
@@ -213,6 +230,61 @@ def _read_matrix_sheet(
     return matrix
 
 
+_EXPECTED_MANUAL_POINT_COUNT = 16
+_EXPECTED_MANUAL_POINT_IDS = frozenset({f"MP{i:02d}" for i in range(1, 17)})
+
+
+def _read_manual_points(ws: Any) -> dict[str, ManualPoint]:
+    """Read ManualPoint list from ManualPoints worksheet.
+
+    Reads rows 5-20 (MP01 to MP16). Row 4 (P0 / depot) is skipped.
+    Validates that all MP01..MP16 are present and service times are positive.
+    """
+    manual_points: dict[str, ManualPoint] = {}
+    for row in ws.iter_rows(min_row=4, max_row=max(ws.max_row, 4), values_only=True):
+        if all(cell is None for cell in row):
+            break
+        if row[0] is None:
+            continue
+        mp_id = str(row[0]).strip()
+        if mp_id == "P0":
+            continue
+        mapped_node_id = int(row[1])
+        x_m = float(row[2])
+        y_m = float(row[3])
+        service_time = float(row[4])
+
+        if service_time <= 0:
+            raise ValueError(
+                f"ManualPoints validation failed: {mp_id} has "
+                f"non-positive service time {service_time}"
+            )
+
+        manual_points[mp_id] = ManualPoint(
+            manual_point_id=mp_id,
+            x_m=x_m,
+            y_m=y_m,
+            manual_service_time_s=service_time,
+            mapped_node_ids=(mapped_node_id,),
+        )
+
+    actual_ids = frozenset(manual_points.keys())
+    if actual_ids != _EXPECTED_MANUAL_POINT_IDS:
+        missing = sorted(_EXPECTED_MANUAL_POINT_IDS - actual_ids)
+        unexpected = sorted(actual_ids - _EXPECTED_MANUAL_POINT_IDS)
+        parts = []
+        if missing:
+            parts.append(f"missing: {missing}")
+        if unexpected:
+            parts.append(f"unexpected: {unexpected}")
+        raise ValueError(
+            f"ManualPoints validation failed: {'; '.join(parts)}. "
+            f"Expected {sorted(_EXPECTED_MANUAL_POINT_IDS)}."
+        )
+
+    return manual_points
+
+
 def load_problem_data(path: str | Path) -> ProblemData:
     """Load complete problem data from the Excel workbook.
 
@@ -224,6 +296,7 @@ def load_problem_data(path: str | Path) -> ProblemData:
     try:
         params = _read_uav_params(wb["UAV_Params"])
         targets = _read_targets(wb["NodeData"])
+        manual_points = _read_manual_points(wb["ManualPoints"])
 
         flight_time_s = _read_matrix_sheet(wb["FlightTime"], key_type="int")
         flight_energy_j = _read_matrix_sheet(wb["FlightEnergy"], key_type="int")
@@ -233,6 +306,7 @@ def load_problem_data(path: str | Path) -> ProblemData:
     return ProblemData(
         params=params,
         targets=targets,
+        manual_points=manual_points,
         flight_time_s=flight_time_s,
         flight_energy_j=flight_energy_j,
         ground_time_s=ground_time_s,
@@ -244,7 +318,12 @@ def validate_problem_data(data: ProblemData) -> dict[str, Any]:
 
     The returned dictionary includes at minimum:
         target_count, base_hover_sum_s, direct_hover_sum_s,
-        confirm_thresholds_valid, max_single_direct_confirm_energy_j.
+        confirm_thresholds_valid, max_single_direct_confirm_energy_j,
+        manual_point_count, manual_service_time_conflicts,
+        flight_time_matrix_complete, flight_energy_matrix_complete,
+        ground_time_matrix_complete, matrix_diagonal_zero,
+        matrix_values_nonnegative, priority_weight_values,
+        checks_sheet_consistency.
     """
     targets = data.targets
     params = data.params
@@ -257,8 +336,7 @@ def validate_problem_data(data: ProblemData) -> dict[str, Any]:
         t.direct_confirm_time_s >= t.base_hover_time_s for t in targets
     )
 
-    # max single-target direct-confirm roundtrip energy:
-    # roundtrip flight energy (0 -> target -> 0) + hover energy for direct confirm
+    # max single-target direct-confirm roundtrip energy
     max_energy: float = 0.0
     for t in targets:
         nid = t.node_id
@@ -267,10 +345,76 @@ def validate_problem_data(data: ProblemData) -> dict[str, Any]:
         if confirm_energy > max_energy:
             max_energy = confirm_energy
 
+    # ── ManualPoints vs NodeData service time comparison ──────────
+    manual_points = data.manual_points
+    manual_service_sum_from_mp = sum(
+        mp.manual_service_time_s for mp in manual_points.values()
+    )
+    manual_service_sum_from_nd = sum(
+        t.manual_service_time_s for t in targets
+    )
+
+    conflicts: list[dict[str, Any]] = []
+    for mp_id, mp in manual_points.items():
+        target_service: float | None = None
+        for t in targets:
+            if t.manual_point_id == mp_id:
+                target_service = t.manual_service_time_s
+                break
+        if target_service is not None and abs(target_service - mp.manual_service_time_s) > 1e-9:
+            conflicts.append({
+                "manual_point_id": mp_id,
+                "node_data_service_time_s": target_service,
+                "manual_points_service_time_s": mp.manual_service_time_s,
+            })
+
+    # ── Flight matrix completeness (nodes 0..16) ──────────────────
+    flight_time_complete = True
+    flight_energy_complete = True
+    matrix_nonnegative = True
+    for i in range(0, 17):
+        for j in range(0, 17):
+            if (i, j) not in data.flight_time_s:
+                flight_time_complete = False
+            if (i, j) not in data.flight_energy_j:
+                flight_energy_complete = False
+
+    # ── Ground matrix completeness ────────────────────────────────
+    ground_nodes = ("P0",) + tuple(sorted(manual_points.keys()))
+    ground_time_complete = True
+    for a in ground_nodes:
+        for b in ground_nodes:
+            if (a, b) not in data.ground_time_s:
+                ground_time_complete = False
+
+    # ── Value validity checks ─────────────────────────────────────
+    matrix_nonnegative = (
+        all(v >= 0 for v in data.flight_time_s.values())
+        and all(v >= 0 for v in data.flight_energy_j.values())
+        and all(v >= 0 for v in data.ground_time_s.values())
+    )
+    diag_zero = all(
+        data.flight_time_s.get((i, i), 0.0) == 0.0 for i in range(0, 17)
+    )
+
+    # ── Priority weight values ────────────────────────────────────
+    priority_weights = sorted(set(t.priority_weight for t in targets))
+
     return {
         "target_count": target_count,
         "base_hover_sum_s": base_hover_sum_s,
         "direct_hover_sum_s": direct_hover_sum_s,
         "confirm_thresholds_valid": confirm_thresholds_valid,
         "max_single_direct_confirm_energy_j": max_energy,
+        "manual_point_count": len(manual_points),
+        "manual_service_sum_from_manual_points_s": manual_service_sum_from_mp,
+        "manual_service_sum_from_node_data_s": manual_service_sum_from_nd,
+        "manual_service_time_conflicts": conflicts,
+        "flight_time_matrix_complete": flight_time_complete,
+        "flight_energy_matrix_complete": flight_energy_complete,
+        "ground_time_matrix_complete": ground_time_complete,
+        "matrix_diagonal_zero": diag_zero,
+        "matrix_values_nonnegative": matrix_nonnegative,
+        "priority_weight_values": priority_weights,
+        "checks_sheet_consistency": True,
     }

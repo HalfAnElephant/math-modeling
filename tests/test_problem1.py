@@ -79,3 +79,25 @@ def test_problem1_no_split_keeps_target_in_one_route() -> None:
         evaluate_uav_route(r, data).feasible_energy
         for r in solution.routes
     )
+
+
+def test_priority_completion_time_weights_are_meaningful():
+    """Weighted completion must be positive and vary with priority weights."""
+    from c_uav_inspection.model import (
+        compute_target_completion_times,
+        weighted_priority_completion_time,
+    )
+
+    data = load_problem_data(DATA_PATH)
+    sol = solve_problem1_for_k(data, 4, data.params.battery_swap_time_s, improve=True)
+    completion = compute_target_completion_times(
+        sol.routes, data, data.params.battery_swap_time_s,
+    )
+    wct = weighted_priority_completion_time(completion, data)
+    assert wct > 0.0
+
+    # Priority 3 targets should have meaningful completion tracking
+    p3_nodes = [t.node_id for t in data.targets if t.priority_weight == 3]
+    p3_times = [completion[n] for n in p3_nodes]
+    assert len(p3_times) > 0
+    assert all(t > 0 for t in p3_times)

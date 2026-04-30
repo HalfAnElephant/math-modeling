@@ -145,3 +145,57 @@
 5. **闭环时间分解**：建议以图示分别呈现无人机阶段时间、地面复核时间、闭环总时间，直观展示两者关系。
 
 6. **敏感性分析**：K值对比和阈值倍率敏感性分析为论文的参数讨论提供了充分的实验依据，建议以图表形式纳入正文或附录。
+
+## 7. 数据口径说明
+
+人工复核服务时间以 `ManualPoints` 表为准。`NodeData` 中 `manual_service_time_s` 仅用于冲突校验，不作为地面时间计算依据。经对比，MP02（180 vs 210）、MP08（180 vs 240）、MP09（180 vs 240）、MP13（180 vs 240）、MP16（180 vs 240）共5个人工点在两表中服务时间存在差异。详细冲突记录见 `outputs/c_uav_inspection/data_validation.json`。
+
+## 8. 推荐方案说明
+
+问题2最终推荐方案来自统一候选池和帕累托筛选，非单一启发式链末端。所有候选经可行性过滤后，按闭环时间、人工点数、加权人工代价、总能耗、航次数和负载标准差进行帕累托非支配排序。推荐选择规则记录在 `recommended_solution.json` 中。
+
+## 9. 复现命令
+
+环境要求：Python 3.11，依赖见 `requirements.txt`。
+
+常规实验（不含全枚举）：
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+from c_uav_inspection.experiments import run_all_experiments
+from c_uav_inspection.plots import generate_all_figures
+
+data_path = Path("2026同济数学建模竞赛赛题/2026C数据.xlsx")
+out = Path("outputs/c_uav_inspection")
+run_all_experiments(data_path, out, include_expensive=False)
+generate_all_figures(data_path, out)
+PY
+```
+
+全枚举验证（65536子集，耗时较长）：
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+from c_uav_inspection.experiments import run_all_experiments
+
+run_all_experiments(
+    Path("2026同济数学建模竞赛赛题/2026C数据.xlsx"),
+    Path("outputs/c_uav_inspection"),
+    include_expensive=True,
+)
+PY
+```
+
+测试：
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
+
+Word 成稿构建：
+
+```bash
+.venv/bin/python build_paper.py
+```

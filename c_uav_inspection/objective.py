@@ -102,3 +102,46 @@ def weighted_normalized_objective(
         weighted_sum += weights[name] * normalized
 
     return weighted_sum / total_weight
+
+
+def is_dominated(
+    candidate: Mapping[str, float],
+    other: Mapping[str, float],
+    minimize_terms: Sequence[str],
+) -> bool:
+    """Check whether *other* dominates *candidate* on the given minimize terms.
+
+    Domination: other is no worse on all terms AND strictly better on at least one.
+    """
+    no_worse = all(other[t] <= candidate[t] for t in minimize_terms)
+    strictly_better = any(other[t] < candidate[t] for t in minimize_terms)
+    return no_worse and strictly_better
+
+
+def pareto_front(
+    rows: Sequence[Mapping[str, float]],
+    minimize_terms: Sequence[str],
+) -> list[Mapping[str, float]]:
+    """Return the Pareto front (non-dominated rows) for the given minimize terms.
+
+    A row is on the front if no other row dominates it.
+    """
+    result: list[Mapping[str, float]] = []
+    for row in rows:
+        if not any(is_dominated(row, other, minimize_terms) for other in rows):
+            result.append(row)
+    return result
+
+
+def score_with_fixed_bounds(
+    row: Mapping[str, float],
+    bounds: Mapping[str, ObjectiveTermBounds],
+    weights: Mapping[str, float],
+) -> float:
+    """Score a candidate row using pre-computed normalization bounds.
+
+    Unlike in-table normalization, the bounds come from a shared candidate
+    pool, making scores comparable across different experiments.
+    """
+    values = {name: float(row[name]) for name in weights}
+    return weighted_normalized_objective(values, dict(bounds), weights)
